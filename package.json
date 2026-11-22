@@ -1,0 +1,50 @@
+{
+  "name": "saydraft-web",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Saydraft: a private voice notes workspace with AI transcription, rewrites and translation.",
+  "engines": {
+    "node": "24.x"
+  },
+  "scripts": {
+    "dev": "next dev -H 127.0.0.1 -p 3000",
+    "build": "next build",
+    "start": "next start -H 127.0.0.1 -p 3000",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test \"test/unit/*.test.ts\" && node --test \"test/e2e/*.test.mjs\"",
+    "test:unit": "node --test \"test/unit/*.test.ts\"",
+    "test:e2e": "node --test \"test/e2e/*.test.mjs\"",
+    "verify": "npm run typecheck && npm run build && npm test"
+  },
+  "dependencies": {
+    "@fontsource-variable/inter": "^5.3.0",
+    "@opentelemetry/api": "^1.10.0",
+    "@supabase/supabase-js": "^2.119.2",
+    "ffmpeg-static": "^5.3.0",
+    "fix-webm-duration": "^1.0.6",
+    "lucide-react": "^0.511.0",
+    "motion": "^14.14.0",
+    "next": "^15.5.29",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "tus-js-client": "^4.3.1",
+    "workflow": "^5.7.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.1.8",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.1.6",
+    "@types/react-dom": "^19.1.5",
+    "postcss": "^8.5.33",
+    "tailwindcss": "^4.1.8",
+    "typescript": "^5.8.3"
+  },
+  "overrides": {
+    "postcss": "$postcss",
+    "@vercel/cli-auth": "0.4.2",
+    "@vercel/oidc": "4.0.9",
+    "@oclif/core": { "minimatch": "11.0.9" },
+    "@vercel/queue": { "minimatch": "11.0.9" }
+  }
+}
