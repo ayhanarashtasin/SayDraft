@@ -1,21 +1,38 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { errorResponse, guardRequest, json } from "../../src/server/http.ts";
+import { errorResponse, guardRequest, isHostedHost, json } from "../../src/server/http.ts";
 
-test("Vercel domains require the configured workspace password", () => {
+test("only configured domains are served, and other websites cannot make requests", () => {
   const originalEnv = process.env;
   const domain = "saydraft-check.vercel.app";
-  process.env = { ...originalEnv, VERCEL: "1", VERCEL_URL: domain, SAYDRAFT_PASSWORD: "" };
+  process.env = { ...originalEnv, VERCEL: "1", VERCEL_URL: domain };
   try {
-    const request = (headers = {}) => new Request(`https://${domain}/api/notes`, { headers: { Host: domain, ...headers } });
-    assert.throws(() => guardRequest(request()), (error) => errorResponse(error).status === 503);
-    const password = "temporary-workspace-password-for-test";
-    process.env.SAYDRAFT_PASSWORD = password;
-    assert.throws(() => guardRequest(request()), (error) => errorResponse(error).status === 401);
-    const Authorization = `Basic ${Buffer.from(`saydraft:${password}`).toString("base64")}`;
-    assert.doesNotThrow(() => guardRequest(request({ Authorization })));
-    assert.throws(() => guardRequest(request({ Authorization, "Sec-Fetch-Site": "cross-site" })),
-      (error) => errorResponse(error).status === 403);
+    const request = (init: { headers?: Record<string, string>; host?: string; method?: string } = {}) => {
+      const host = init.host ?? domain;
+      return new Request(`https://${host}/api/notes`, { method: init.method, headers: { Host: host, ...init.headers } });
+    };
+    assert.doesNotThrow(() => guardRequest(request()));
+    assert.throws(() => guardRequest(request({ host: "other.example.com" })), (error) => errorResponse(error).status === 403);
+    assert.throws(() => guardRequest(request({ headers: { "Sec-Fetch-Site": "cross-site" } })), (error) => errorResponse(error).status === 403);
+    assert.doesNotThrow(() => guardRequest(request({ method: "POST", headers: { Origin: `https://${domain}` } })));
+    assert.throws(
+      () => guardRequest(request({ method: "POST", headers: { Origin: "https://evil.example.com" } })),
+      (error) => errorResponse(error).status === 403,
+    );
+  } finally {
+    process.env = originalEnv;
+  }
+});
+
+test("a request is hosted when it is not for this computer", () => {
+  const originalEnv = process.env;
+  process.env = { ...originalEnv, VERCEL: "" };
+  try {
+    assert.equal(isHostedHost("127.0.0.1:3000"), false);
+    assert.equal(isHostedHost("localhost:3000"), false);
+    assert.equal(isHostedHost("notes.example.com"), true);
+    process.env.VERCEL = "1";
+    assert.equal(isHostedHost("127.0.0.1:3000"), true);
   } finally {
     process.env = originalEnv;
   }

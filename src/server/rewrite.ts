@@ -52,17 +52,17 @@ function shorten(text: string, max: number): string {
  * Validates a rewrite request, stores a "processing" rewrite and returns a function
  * that runs the model. The result is saved even if the client disconnects.
  */
-export async function prepareRewrite(noteId: number, request: RewriteRequest): Promise<PreparedRewrite> {
+export async function prepareRewrite(userId: string, noteId: number, request: RewriteRequest): Promise<PreparedRewrite> {
   if (!aiConfig().configured) {
     throw new HttpError(503, "key_missing", "AI rewriting is not configured on the server yet.");
   }
-  const note = await getNoteRow(noteId);
+  const note = await getNoteRow(userId, noteId);
   if (!note) throw notFound("Note not found.");
 
   let source = note.transcript;
   let sourceRewriteId: number | null = null;
   if (request.sourceRewriteId) {
-    const base = await getRewrite(noteId, request.sourceRewriteId);
+    const base = await getRewrite(userId, noteId, request.sourceRewriteId);
     if (!base) throw notFound("The version you want to rewrite no longer exists.");
     if (base.status !== "ready") throw conflict("That version is not finished yet.");
     source = base.text;
@@ -75,7 +75,7 @@ export async function prepareRewrite(noteId: number, request: RewriteRequest): P
     throw new HttpError(413, "too_large", `The text is too long to rewrite in one go (max ${REWRITE_INPUT_MAX.toLocaleString("en-US")} characters).`);
   }
 
-  const settings = await getSettings();
+  const settings = await getSettings(userId);
   const chosen = [request.promptId !== undefined, request.instruction !== undefined, request.translateTo !== undefined].filter(Boolean).length;
   if (chosen !== 1) throw badRequest("Choose a prompt, write an instruction or pick a language.");
 
@@ -88,7 +88,7 @@ export async function prepareRewrite(noteId: number, request: RewriteRequest): P
   let instruction: string | null = null;
 
   if (request.promptId !== undefined) {
-    const prompt = await getPrompt(request.promptId);
+    const prompt = await getPrompt(userId, request.promptId);
     if (!prompt) throw notFound("That prompt no longer exists.");
     kind = "rewrite";
     label = prompt.title;
@@ -111,7 +111,7 @@ export async function prepareRewrite(noteId: number, request: RewriteRequest): P
     language = target.code;
   }
 
-  const rewrite = await insertRewrite(noteId, {
+  const rewrite = await insertRewrite(userId, noteId, {
     kind,
     promptId,
     label,
@@ -125,19 +125,19 @@ export async function prepareRewrite(noteId: number, request: RewriteRequest): P
     try {
       const result = await chatStream({ model, system, user: source, signal: AbortSignal.timeout(240_000) }, (delta) => onDelta?.(delta));
       if (!result.text) throw new HttpError(422, "empty_output", "The AI returned an empty result. Try again or pick another prompt.");
-      const saved = await updateRewrite(rewrite.id, {
+      const saved = await updateRewrite(userId, rewrite.id, {
         text: result.text,
         status: "ready",
         error: result.truncated ? "The AI reached its length limit, so the end may be missing." : null,
       });
       if (!saved) throw notFound("The note was deleted.");
-      await triggerAutomaticActions("rewrite", noteId, rewrite.id).catch((error) => console.warn("Rewrite integrations could not start:", error));
+      await triggerAutomaticActions(userId, "rewrite", noteId, rewrite.id).catch((error) => console.warn("Rewrite integrations could not start:", error));
       return saved;
     } catch (error) {
       const message = error instanceof HttpError ? error.message
         : error instanceof DOMException && error.name === "TimeoutError" ? "The rewrite took too long. Try again."
         : "The rewrite failed. Try again.";
-      await updateRewrite(rewrite.id, { status: "failed", error: message });
+      await updateRewrite(userId, rewrite.id, { status: "failed", error: message });
       throw error instanceof HttpError ? error : new HttpError(502, "rewrite_failed", message);
     }
   };

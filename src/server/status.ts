@@ -5,8 +5,8 @@ import { aiConfig } from "./openai.ts";
 import { getSettings } from "./settings.ts";
 import { maxUploadBytes } from "./uploads.ts";
 
-export async function appStatus(): Promise<AppStatus> {
-  const settings = await getSettings();
+export async function appStatus(userId: string): Promise<AppStatus> {
+  const settings = await getSettings(userId);
   return {
     configured: aiConfig().configured,
     ffmpeg: hasFfmpeg(),

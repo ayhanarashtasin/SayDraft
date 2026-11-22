@@ -4,7 +4,7 @@ import { applyPropertyValues, sanitizeProperties } from "../lib/prompt-render.ts
 import { DEFAULT_PROMPTS, PROMPT_CATEGORIES, findTemplate } from "../lib/templates.ts";
 import { badRequest, notFound } from "./http.ts";
 import { forgetPromptInSettings } from "./settings.ts";
-import { assertOk, ensurePrompts, supabase } from "./supabase.ts";
+import { assertOk, ensurePrompts, owned } from "./supabase.ts";
 
 interface PromptRow {
   id: number;
@@ -55,31 +55,31 @@ function toPrompt(row: PromptRow): Prompt {
 
 const CATEGORY_ORDER = new Map<string, number>(PROMPT_CATEGORIES.map((category, index) => [category, index]));
 
-export async function listPrompts(): Promise<Prompt[]> {
-  await ensurePrompts();
+export async function listPrompts(userId: string): Promise<Prompt[]> {
+  await ensurePrompts(userId);
   const rows = assertOk(
-    await supabase().from("prompts").select("*").order("position", { ascending: true }).order("id", { ascending: true }),
+    await owned(userId, "prompts").select("*").order("position", { ascending: true }).order("id", { ascending: true }),
   ) as PromptRow[];
   return rows
     .map(toPrompt)
     .sort((a, b) => (CATEGORY_ORDER.get(a.category) ?? 99) - (CATEGORY_ORDER.get(b.category) ?? 99) || a.position - b.position || a.id - b.id);
 }
 
-export async function getPrompt(id: number): Promise<Prompt | null> {
-  await ensurePrompts();
-  const row = assertOk(await supabase().from("prompts").select("*").eq("id", id).maybeSingle()) as PromptRow | null;
+export async function getPrompt(userId: string, id: number): Promise<Prompt | null> {
+  await ensurePrompts(userId);
+  const row = assertOk(await owned(userId, "prompts").select("*").eq("id", id).maybeSingle()) as PromptRow | null;
   return row ? toPrompt(row) : null;
 }
 
-export async function requirePrompt(id: number): Promise<Prompt> {
-  const prompt = await getPrompt(id);
+export async function requirePrompt(userId: string, id: number): Promise<Prompt> {
+  const prompt = await getPrompt(userId, id);
   if (!prompt) throw notFound("Prompt not found.");
   return prompt;
 }
 
-export async function promptExists(id: number): Promise<boolean> {
-  await ensurePrompts();
-  const { data } = await supabase().from("prompts").select("id").eq("id", id).maybeSingle();
+export async function promptExists(userId: string, id: number): Promise<boolean> {
+  await ensurePrompts(userId);
+  const { data } = await owned(userId, "prompts").select("id").eq("id", id).maybeSingle();
   return Boolean(data);
 }
 
@@ -108,17 +108,16 @@ function cleanModel(value: unknown): string | null {
   return value.trim();
 }
 
-async function nextPosition(): Promise<number> {
-  const rows = assertOk(await supabase().from("prompts").select("position")) as Array<{ position: number }>;
+async function nextPosition(userId: string): Promise<number> {
+  const rows = assertOk(await owned(userId, "prompts").select("position")) as Array<{ position: number }>;
   return rows.reduce((max, row) => Math.max(max, row.position), -1) + 1;
 }
 
-export async function createPrompt(input: Record<string, unknown>): Promise<Prompt> {
-  await ensurePrompts();
+export async function createPrompt(userId: string, input: Record<string, unknown>): Promise<Prompt> {
+  await ensurePrompts(userId);
   const now = Date.now();
   const row = assertOk(
-    await supabase()
-      .from("prompts")
+    await owned(userId, "prompts")
       .insert({
         title: cleanText(input.title, "Title", 80, true),
         description: cleanText(input.description, "Description", 200, false),
@@ -127,7 +126,7 @@ export async function createPrompt(input: Record<string, unknown>): Promise<Prom
         properties: sanitizeProperties(input.properties),
         model: cleanModel(input.model),
         is_favorite: input.isFavorite === true,
-        position: await nextPosition(),
+        position: await nextPosition(userId),
         created_at: now,
         updated_at: now,
       })
@@ -137,8 +136,8 @@ export async function createPrompt(input: Record<string, unknown>): Promise<Prom
   return toPrompt(row);
 }
 
-export async function updatePrompt(id: number, patch: Record<string, unknown>): Promise<Prompt> {
-  const existing = await requirePrompt(id);
+export async function updatePrompt(userId: string, id: number, patch: Record<string, unknown>): Promise<Prompt> {
+  const existing = await requirePrompt(userId, id);
   const updates: Record<string, unknown> = {};
   if (patch.title !== undefined) updates.title = cleanText(patch.title, "Title", 80, true);
   if (patch.description !== undefined) updates.description = cleanText(patch.description, "Description", 200, false);
@@ -159,40 +158,40 @@ export async function updatePrompt(id: number, patch: Record<string, unknown>): 
   }
   if (Object.keys(updates).length === 0) return existing;
   updates.updated_at = Date.now();
-  const row = assertOk(await supabase().from("prompts").update(updates).eq("id", id).select("*").single()) as PromptRow;
+  const row = assertOk(await owned(userId, "prompts").update(updates).eq("id", id).select("*").single()) as PromptRow;
   return toPrompt(row);
 }
 
-export async function deletePrompt(id: number): Promise<void> {
-  const deleted = assertOk(await supabase().from("prompts").delete().eq("id", id).select("id")) as Array<{ id: number }>;
+export async function deletePrompt(userId: string, id: number): Promise<void> {
+  const deleted = assertOk(await owned(userId, "prompts").delete().eq("id", id).select("id")) as Array<{ id: number }>;
   if (deleted.length === 0) throw notFound("Prompt not found.");
-  await forgetPromptInSettings(id);
+  await forgetPromptInSettings(userId, id);
 }
 
 /** Moves a prompt one step up or down within its category. */
-export async function movePrompt(id: number, direction: "up" | "down"): Promise<Prompt[]> {
-  const prompt = await requirePrompt(id);
-  const siblings = (await listPrompts()).filter((item) => item.category === prompt.category);
+export async function movePrompt(userId: string, id: number, direction: "up" | "down"): Promise<Prompt[]> {
+  const prompt = await requirePrompt(userId, id);
+  const siblings = (await listPrompts(userId)).filter((item) => item.category === prompt.category);
   const index = siblings.findIndex((item) => item.id === id);
   const swapWith = siblings[direction === "up" ? index - 1 : index + 1];
   if (swapWith) {
     const ordered = siblings.map((item) => item.id);
     [ordered[index], ordered[siblings.indexOf(swapWith)]] = [swapWith.id, id];
     const base = Math.min(...siblings.map((item) => item.position));
-    await Promise.all(ordered.map((promptId, offset) => supabase().from("prompts").update({ position: base + offset }).eq("id", promptId)));
+    await Promise.all(ordered.map((promptId, offset) => owned(userId, "prompts").update({ position: base + offset }).eq("id", promptId)));
   }
-  return listPrompts();
+  return listPrompts(userId);
 }
 
-export async function restoreDefaultPrompts(): Promise<number> {
-  await ensurePrompts();
-  const existing = assertOk(await supabase().from("prompts").select("builtin_key")) as Array<{ builtin_key: string | null }>;
+export async function restoreDefaultPrompts(userId: string): Promise<number> {
+  await ensurePrompts(userId);
+  const existing = assertOk(await owned(userId, "prompts").select("builtin_key")) as Array<{ builtin_key: string | null }>;
   const keys = new Set(existing.map((row) => row.builtin_key).filter((k): k is string => Boolean(k)));
   const now = Date.now();
   const missing = DEFAULT_PROMPTS.map((prompt, index) => ({ prompt, index })).filter(({ prompt }) => !keys.has(prompt.builtinKey));
   if (missing.length === 0) return 0;
   const inserted = assertOk(
-    await supabase().from("prompts").upsert(
+    await owned(userId, "prompts").upsert(
       missing.map(({ prompt, index }) => ({
         title: prompt.title,
         description: prompt.description,
@@ -203,7 +202,7 @@ export async function restoreDefaultPrompts(): Promise<number> {
         position: index,
         created_at: now,
         updated_at: now,
-      })), { onConflict: "builtin_key", ignoreDuplicates: true },
+      })), { onConflict: "user_id,builtin_key", ignoreDuplicates: true },
     ).select("id"),
   );
   return inserted?.length ?? 0;
@@ -211,17 +210,17 @@ export async function restoreDefaultPrompts(): Promise<number> {
 
 /** Creates a user prompt from a gallery template with the chosen property values. */
 export async function promptFromTemplate(
+  userId: string,
   templateId: string,
   values: Record<string, unknown> | undefined,
   favorite: boolean,
 ): Promise<Prompt> {
-  await ensurePrompts();
+  await ensurePrompts(userId);
   const template = findTemplate(templateId);
   if (!template) throw notFound("Template not found.");
   const now = Date.now();
   const row = assertOk(
-    await supabase()
-      .from("prompts")
+    await owned(userId, "prompts")
       .insert({
         title: template.title,
         description: template.description,
@@ -230,7 +229,7 @@ export async function promptFromTemplate(
         properties: applyPropertyValues(template.properties, values),
         template_id: template.id,
         is_favorite: favorite,
-        position: await nextPosition(),
+        position: await nextPosition(userId),
         created_at: now,
         updated_at: now,
       })

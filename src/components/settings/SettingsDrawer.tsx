@@ -2,12 +2,14 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { ChevronRight, FolderArchive, LayoutGrid, Plug, SlidersHorizontal, Sparkles, Zap } from "lucide-react";
+import { ChevronRight, FolderArchive, LayoutGrid, Plug, SlidersHorizontal, Sparkles, UserRound, Zap } from "lucide-react";
 import { motion } from "motion/react";
 import { api, errorMessage } from "@/lib/api-client";
 import { languageLabel } from "@/lib/languages";
 import { SPRING_SNAPPY } from "@/lib/motion";
 import type { AppSettings } from "@/lib/types";
+import { LogoutButton } from "../auth/LogoutButton";
+import { useCurrentUser } from "../auth/useCurrentUser";
 import { LanguageDialog } from "../note/LanguageDialog";
 import { useAppStatus } from "../StatusProvider";
 import { type Theme, useTheme } from "../ThemeProvider";
@@ -34,6 +36,7 @@ export function SettingsDrawer({ open, onClose, onOpenTags }: SettingsDrawerProp
   const { status, refresh } = useAppStatus();
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [langOpen, setLangOpen] = useState(false);
+  const user = useCurrentUser(open);
 
   useEffect(() => {
     if (!open) return;
@@ -75,6 +78,25 @@ export function SettingsDrawer({ open, onClose, onOpenTags }: SettingsDrawerProp
               <ChevronRight className="h-3.5 w-3.5" />
             </span>
           </Link>
+
+          <section>
+            <header className="text-[1.0625rem]/5 font-semibold text-[var(--ink-subtle)]">Account</header>
+            <div className="mt-2 flex flex-col divide-y divide-[var(--border-subtle)] rounded-3xl bg-[var(--surface-panel-card)] px-4">
+              <Link
+                href="/settings/account"
+                onClick={onClose}
+                className="flex w-full items-center gap-3 py-3 text-[1.03125rem]/6 text-[var(--ink)] transition-opacity hover:opacity-70"
+              >
+                <UserRound className="h-5 w-5 shrink-0 text-[var(--ink-subtle)]" />
+                <div className="min-w-0 flex-1">
+                  <span className="block truncate">{user ? user.name || user.email : "Your account"}</span>
+                  {user?.name && <span className="block truncate text-[0.8125rem]/4 text-[var(--ink-muted)]">{user.email}</span>}
+                </div>
+                <RowChevron />
+              </Link>
+              <LogoutButton variant="row" />
+            </div>
+          </section>
 
           <section>
             <header className="text-[1.0625rem]/5 font-semibold text-[var(--ink-subtle)]">Rewrite options</header>

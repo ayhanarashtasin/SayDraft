@@ -3,8 +3,9 @@ import path from "node:path";
 import { slugify } from "@/lib/format";
 import { concatToM4a, hasFfmpeg } from "@/server/audio";
 import { contentDisposition, fileResponse } from "@/server/files";
-import { HttpError, notFound, parseId, route } from "@/server/http";
+import { HttpError, notFound, parseId } from "@/server/http";
 import { getNoteRow, listAudioRows } from "@/server/notes";
+import { route } from "@/server/route";
 import { createAudioSignedUrl, streamAudioObject, tempDir } from "@/server/supabase";
 import { zipStream } from "@/server/zip";
 
@@ -12,11 +13,11 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
-export const GET = route<{ id: string }>(async (request, params) => {
+export const GET = route<{ id: string }>(async (request, params, user) => {
   const noteId = parseId(params.id, "note id");
-  const note = await getNoteRow(noteId);
+  const note = await getNoteRow(user.id, noteId);
   if (!note) throw notFound("Note not found.");
-  const files = await listAudioRows(noteId);
+  const files = await listAudioRows(user.id, noteId);
   if (files.length === 0) throw notFound("This note has no audio.");
   const base = slugify(note.title || "recording");
 

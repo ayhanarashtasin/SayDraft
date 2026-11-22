@@ -1,6 +1,3 @@
-import { createHash, timingSafeEqual } from "node:crypto";
-import type { NextRequest } from "next/server";
-
 export class HttpError extends Error {
   status: number;
   code: string;
@@ -38,32 +35,27 @@ export function isAllowedHost(host: string | null): boolean {
   return extra.includes(name) || extra.includes(host.toLowerCase());
 }
 
-export function guardAccess(request: Request): void {
+/** True when the app is served from a public domain (not from this computer). */
+export function isHostedHost(host: string): boolean {
+  return Boolean(process.env.VERCEL) || !LOCAL_HOST_NAMES.has(hostName(host));
+}
+
+/** Rejects a Host header that this deployment is not configured for (blocks DNS rebinding). */
+export function guardHost(request: Request): void {
   const host = request.headers.get("host");
   if (!host || !isAllowedHost(host)) {
     throw new HttpError(403, "host_not_allowed", "This domain is not configured for Saydraft.");
-  }
-  const password = process.env.SAYDRAFT_PASSWORD?.trim();
-  const hosted = Boolean(process.env.VERCEL) || !LOCAL_HOST_NAMES.has(hostName(host));
-  if (!password && !hosted) return;
-  if (!password || password.length < 32) {
-    throw new HttpError(503, "workspace_password_missing", "Set a workspace password of at least 32 characters on the server.");
-  }
-  const expected = `Basic ${Buffer.from(`saydraft:${password}`).toString("base64")}`;
-  const received = (request.headers.get("authorization") ?? "").replace(/^basic /i, "Basic ");
-  const digest = (value: string) => createHash("sha256").update(value).digest();
-  if (!timingSafeEqual(digest(received), digest(expected))) {
-    throw new HttpError(401, "workspace_login", "Sign in with the Saydraft workspace password.");
   }
 }
 
 /**
  * Blocks DNS-rebinding (unexpected Host header) and cross-site requests (CSRF),
  * so other websites open in the browser cannot read notes or spend API credits.
+ * Who the caller is gets decided separately, from the sign-in session (see route.ts).
  */
 export function guardRequest(request: Request): void {
   const host = request.headers.get("host");
-  guardAccess(request);
+  guardHost(request);
   const site = request.headers.get("sec-fetch-site");
   if (site && site !== "same-origin" && site !== "none") {
     throw new HttpError(403, "cross_site", "Requests from other websites are not allowed.");
@@ -109,32 +101,13 @@ export function json(data: unknown, init: ResponseInit = {}): Response {
 
 export function errorResponse(error: unknown): Response {
   if (error instanceof HttpError) {
-    const headers = new Headers(NO_STORE);
-    if (error.code === "workspace_login") headers.set("WWW-Authenticate", 'Basic realm="Saydraft", charset="UTF-8"');
-    return Response.json({ error: { code: error.code, message: error.message } }, { status: error.status, headers });
+    return Response.json({ error: { code: error.code, message: error.message } }, { status: error.status, headers: new Headers(NO_STORE) });
   }
   console.error("Saydraft API error:", error);
   return Response.json(
     { error: { code: "internal", message: "Something went wrong on the server. Try again." } },
     { status: 500, headers: NO_STORE },
   );
-}
-
-type RouteContext<P> = { params: Promise<P> };
-
-/** Wraps a route handler with the request guard and uniform JSON errors. */
-export function route<P extends Record<string, string> = Record<string, never>>(
-  handler: (request: NextRequest, params: P) => Promise<Response> | Response,
-) {
-  return async (request: NextRequest, context: RouteContext<P>): Promise<Response> => {
-    try {
-      guardRequest(request);
-      const params = context?.params ? await context.params : ({} as P);
-      return await handler(request, params);
-    } catch (error) {
-      return errorResponse(error);
-    }
-  };
 }
 
 /** Reads a JSON object body with a size cap. */

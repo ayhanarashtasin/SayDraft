@@ -11,10 +11,15 @@ export async function createTestSupabase(dir, freePort) {
   const suppliedUrl = process.env.TEST_SUPABASE_URL;
   if (suppliedUrl) {
     const parsed = new URL(suppliedUrl);
-    if (!["127.0.0.1", "localhost"].includes(parsed.hostname) || !process.env.TEST_SUPABASE_SECRET_KEY) {
-      throw new Error("API tests require an empty local Supabase project and its test key.");
+    if (!["127.0.0.1", "localhost"].includes(parsed.hostname) || !process.env.TEST_SUPABASE_SECRET_KEY || !process.env.TEST_SUPABASE_PUBLISHABLE_KEY) {
+      throw new Error("API tests require an empty local Supabase project and its secret and publishable test keys.");
     }
-    return { url: suppliedUrl, key: process.env.TEST_SUPABASE_SECRET_KEY, stop: async () => {} };
+    return {
+      url: suppliedUrl,
+      key: process.env.TEST_SUPABASE_SECRET_KEY,
+      publishableKey: process.env.TEST_SUPABASE_PUBLISHABLE_KEY,
+      stop: async () => {},
+    };
   }
 
   const cwd = path.join(dir, "supabase-test");
@@ -43,9 +48,9 @@ file_size_limit = "50MiB"
   try {
     await run(`${cli} start --exclude studio,imgproxy,mailpit,edge-runtime,logflare,vector,postgres-meta,realtime`, options);
     const { stdout } = await run(`${cli} status --output json`, options);
-    const { API_URL: url, SECRET_KEY: key } = JSON.parse(stdout);
-    if (!url || !key) throw new Error("Supabase did not return local API configuration.");
-    return { url, key, stop };
+    const { API_URL: url, SECRET_KEY: key, PUBLISHABLE_KEY: publishableKey } = JSON.parse(stdout);
+    if (!url || !key || !publishableKey) throw new Error("Supabase did not return local API configuration.");
+    return { url, key, publishableKey, stop };
   } catch (error) {
     await stop();
     const detail = [error.stderr, error.stdout].filter(Boolean).join("\n").split(/\r?\n/)

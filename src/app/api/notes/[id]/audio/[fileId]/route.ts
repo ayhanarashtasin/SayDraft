@@ -1,8 +1,9 @@
 import path from "node:path";
 import { slugify } from "@/lib/format";
 import { contentDisposition } from "@/server/files";
-import { HttpError, json, notFound, parseId, route } from "@/server/http";
+import { HttpError, json, notFound, parseId } from "@/server/http";
 import { deleteAudioFile, getAudioRow, getNoteRow } from "@/server/notes";
+import { route } from "@/server/route";
 import { createAudioSignedUrl } from "@/server/supabase";
 import { finishAudioUpload } from "@/server/uploads";
 
@@ -12,16 +13,16 @@ export const maxDuration = 300;
 
 type Params = { id: string; fileId: string };
 
-async function load(params: Params) {
+async function load(userId: string, params: Params) {
   const noteId = parseId(params.id, "note id");
   const fileId = parseId(params.fileId, "audio id");
-  const row = await getAudioRow(noteId, fileId);
+  const row = await getAudioRow(userId, noteId, fileId);
   if (!row) throw notFound("Audio not found.");
   return { noteId, row };
 }
 
-export const GET = route<Params>(async (request, params) => {
-  const { noteId, row } = await load(params);
+export const GET = route<Params>(async (request, params, user) => {
+  const { noteId, row } = await load(user.id, params);
   const download = request.nextUrl.searchParams.get("download") === "1";
   const etag = `"${row.file_name}"`;
 
@@ -32,7 +33,7 @@ export const GET = route<Params>(async (request, params) => {
     ETag: etag,
   });
   if (download) {
-    const title = (await getNoteRow(noteId))?.title || "note";
+    const title = (await getNoteRow(user.id, noteId))?.title || "note";
     headers.set("Content-Disposition", contentDisposition(`${slugify(title)}-${row.position + 1}${path.extname(row.file_name)}`));
   }
   if (request.headers.get("if-none-match") === etag) {
@@ -72,12 +73,12 @@ export const GET = route<Params>(async (request, params) => {
 
 export const HEAD = GET;
 
-export const POST = route<Params>(async (_request, params) => {
-  const audioFile = await finishAudioUpload(parseId(params.id, "note id"), parseId(params.fileId, "audio id"));
+export const POST = route<Params>(async (_request, params, user) => {
+  const audioFile = await finishAudioUpload(user.id, parseId(params.id, "note id"), parseId(params.fileId, "audio id"));
   return json({ audioFile });
 });
 
-export const DELETE = route<Params>(async (_request, params) => {
-  if (!(await deleteAudioFile(parseId(params.id, "note id"), parseId(params.fileId, "audio id")))) throw notFound("Audio not found.");
+export const DELETE = route<Params>(async (_request, params, user) => {
+  if (!(await deleteAudioFile(user.id, parseId(params.id, "note id"), parseId(params.fileId, "audio id")))) throw notFound("Audio not found.");
   return json({ ok: true });
 });

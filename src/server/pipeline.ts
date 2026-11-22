@@ -7,7 +7,7 @@ import { applyReplacements, cleanTitle, fallbackTitle, joinTranscriptParts } fro
 import { AudioToolError, convertToM4a, extractAudioPiece, hasFfmpeg, probeAudio, remuxAudio } from "./audio.ts";
 import { HttpError, badRequest, notFound } from "./http.ts";
 import { triggerAutomaticActions } from "./integrations.ts";
-import { type NoteRow, getAudioRow, getNoteRow, listAudioRows, recoverExpiredWork } from "./notes.ts";
+import { type NoteRow, getAudioRow, getNoteRow, getNoteRowForJob, listAudioRows, recoverExpiredWork } from "./notes.ts";
 import { aiConfig, chat, transcribe } from "./openai.ts";
 import { prepareRewrite } from "./rewrite.ts";
 import { getSettings } from "./settings.ts";
@@ -54,13 +54,13 @@ export interface AudioPiece {
 const WORK_LEASE_MS = 30 * 60_000;
 const STEP_TIMEOUT_MS = 270_000;
 
-export async function claimTranscription(noteId: number, options: TranscribeOptions): Promise<TranscriptionJob> {
+export async function claimTranscription(userId: string, noteId: number, options: TranscribeOptions): Promise<TranscriptionJob> {
   if (!aiConfig().configured) throw new HttpError(503, "key_missing", "AI transcription is not configured on the server yet.");
   await recoverExpiredWork(noteId);
-  const note = await getNoteRow(noteId);
+  const note = await getNoteRow(userId, noteId);
   if (!note) throw notFound("Note not found.");
   const speakers = options.speakers ?? Boolean(note.speakers);
-  if (speakers && !(await getSettings()).diarizeModel) {
+  if (speakers && !(await getSettings(userId)).diarizeModel) {
     throw badRequest("Speaker separation is turned off. Choose a speaker separation model in Settings → Preferences.");
   }
   const now = Date.now();
@@ -100,7 +100,8 @@ export async function failTranscription(job: TranscriptionJob, message: string):
 export async function loadTranscriptionPlan(job: TranscriptionJob): Promise<TranscriptionPlan> {
   "use step";
   const note = await renewJob(job, "Preparing audio", 0);
-  const [settings, files] = await Promise.all([getSettings(), listAudioRows(job.noteId)]);
+  // The owner comes from the note's own row, never from the job input.
+  const [settings, files] = await Promise.all([getSettings(note.user_id), listAudioRows(note.user_id, job.noteId)]);
   const fileIds = files.filter((file) => job.mode === "all" || file.status !== "ready").map((file) => Number(file.id));
   if (!fileIds.length) throw new FatalError("There is no audio to transcribe.");
   const language = note.language || settings.defaultLanguage;
@@ -111,7 +112,7 @@ export async function loadTranscriptionPlan(job: TranscriptionJob): Promise<Tran
     ffmpeg: hasFfmpeg(),
     model: note.speakers ? settings.diarizeModel : settings.transcribeModel,
     language: language === "auto" ? undefined : language,
-    prompt: !note.speakers && settings.useDictionary ? await dictionaryPrompt() : undefined,
+    prompt: !note.speakers && settings.useDictionary ? await dictionaryPrompt(note.user_id) : undefined,
     autoRewritePromptId: !note.transcript.trim() ? settings.autoRewritePromptId : null,
   };
 }
@@ -126,9 +127,9 @@ export async function prepareAudio(
   job: TranscriptionJob, plan: TranscriptionPlan, index: number,
 ): Promise<PreparedAudio> {
   "use step";
-  await renewJob(job, plan.fileIds.length > 1 ? `Preparing audio (${index + 1} of ${plan.fileIds.length})` : "Preparing audio", 0);
+  const note = await renewJob(job, plan.fileIds.length > 1 ? `Preparing audio (${index + 1} of ${plan.fileIds.length})` : "Preparing audio", 0);
   const id = plan.fileIds[index];
-  const row = await getAudioRow(job.noteId, id);
+  const row = await getAudioRow(note.user_id, job.noteId, id);
   if (!row) throw new FatalError("An audio file was removed before transcription.");
   const original = { id, fileName: row.file_name, mime: row.mime, size: Number(row.size), duration: row.duration_sec };
   const extension = path.extname(row.file_name).slice(1);
@@ -246,19 +247,19 @@ async function generateTitle(text: string, model: string): Promise<string> {
   }
 }
 
-export async function titleForText(text: string): Promise<string> {
-  const settings = await getSettings();
+export async function titleForText(userId: string, text: string): Promise<string> {
+  const settings = await getSettings(userId);
   if (!settings.autoTitle || !aiConfig().configured) return fallbackTitle(text);
   return generateTitle(text, settings.rewriteModel);
 }
 
 export async function saveTranscription(job: TranscriptionJob, fileTexts: Array<{ id: number; text: string }>) {
   "use step";
-  const current = await getNoteRow(job.noteId);
+  const current = await getNoteRowForJob(job.noteId);
   if (!current || current.transcription_id !== job.jobId || current.status === "failed") return false;
   if (current.status === "ready") return true;
-  const settings = await getSettings();
-  const replacements = settings.autoReplacements ? await listReplacements() : [];
+  const settings = await getSettings(current.user_id);
+  const replacements = settings.autoReplacements ? await listReplacements(current.user_id) : [];
   const files = fileTexts.map(({ id, text }) => ({ id, text: replacements.length ? applyReplacements(text, replacements).text : text }));
   const newText = joinTranscriptParts(files.map((file) => file.text), "\n\n");
   if (!newText) throw new FatalError("No speech was detected in the audio.");
@@ -275,14 +276,18 @@ export async function saveTranscription(job: TranscriptionJob, fileTexts: Array<
 
 export async function sendTranscriptActions(job: TranscriptionJob): Promise<void> {
   "use step";
-  await triggerAutomaticActions("transcript", job.noteId, null);
+  const note = await getNoteRowForJob(job.noteId);
+  if (!note) return;
+  await triggerAutomaticActions(note.user_id, "transcript", job.noteId, null);
 }
 // Sending a third-party webhook or creating a Notion page can have side effects.
 sendTranscriptActions.maxRetries = 0;
 
 export async function autoRewriteTranscription(job: TranscriptionJob, promptId: number): Promise<void> {
   "use step";
-  const prepared = await prepareRewrite(job.noteId, { promptId });
+  const note = await getNoteRowForJob(job.noteId);
+  if (!note) return;
+  const prepared = await prepareRewrite(note.user_id, job.noteId, { promptId });
   await prepared.run();
 }
 autoRewriteTranscription.maxRetries = 0;

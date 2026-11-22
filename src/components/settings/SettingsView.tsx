@@ -1,9 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { ArrowLeft, BookA, FolderArchive, LayoutGrid, Megaphone, Plug, Replace, SlidersHorizontal, Sparkles, Tags } from "lucide-react";
+import { ArrowLeft, BookA, FolderArchive, LayoutGrid, Megaphone, Plug, Replace, SlidersHorizontal, Sparkles, Tags, UserRound } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { EASE_OUT, SPRING_SNAPPY } from "@/lib/motion";
+import { AccountSection } from "./AccountSection";
 import { GallerySection } from "./GallerySection";
 import { DataSection, PlanSection, WhatsNewSection } from "./InfoSections";
 import { IntegrationsSection } from "./IntegrationsSection";
@@ -21,6 +22,7 @@ const NAV = [
   { slug: "tags", label: "Tags", icon: Tags },
   { slug: "actions", label: "Integrations", icon: Plug },
   { slug: "data", label: "Library & backup", icon: FolderArchive },
+  { slug: "account", label: "Account", icon: UserRound },
   { slug: "whats-new", label: "What's new", icon: Megaphone },
 ] as const;
 
@@ -44,6 +46,8 @@ function Section({ slug, extra }: { slug: string; extra?: string }) {
       return <PlanSection />;
     case "data":
       return <DataSection />;
+    case "account":
+      return <AccountSection />;
     case "whats-new":
       return <WhatsNewSection />;
     default:

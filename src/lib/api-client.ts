@@ -14,10 +14,20 @@ export class ApiError extends Error {
 
 const NETWORK_MESSAGE = "Could not reach Saydraft. Check your connection and try again.";
 
+/** A request came back "not signed in" (the session ended or expired): go to the login page, and come back here afterwards. */
+function redirectToLogin(): void {
+  if (typeof window === "undefined") return;
+  const { pathname, search } = window.location;
+  if (pathname === "/login" || pathname === "/signup") return;
+  window.location.assign(`/login?next=${encodeURIComponent(pathname + search)}`);
+}
+
 async function toApiError(response: Response): Promise<ApiError> {
   const body = (await response.json().catch(() => null)) as { error?: { code?: string; message?: string } } | null;
   const message = body?.error?.message || `Request failed (HTTP ${response.status}).`;
-  return new ApiError(response.status, body?.error?.code || "http_error", message);
+  const error = new ApiError(response.status, body?.error?.code || "http_error", message);
+  if (response.status === 401 && error.code === "unauthenticated") redirectToLogin();
+  return error;
 }
 
 export interface ApiOptions {

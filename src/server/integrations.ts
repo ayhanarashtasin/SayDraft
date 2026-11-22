@@ -1,7 +1,7 @@
 import type { ActionType, IntegrationAction, Note, Rewrite } from "../lib/types.ts";
 import { HttpError, badRequest, notFound } from "./http.ts";
 import { getNote, getRewrite } from "./notes.ts";
-import { assertOk, supabase } from "./supabase.ts";
+import { assertOk, owned } from "./supabase.ts";
 
 interface ActionRow {
   id: number;
@@ -53,14 +53,14 @@ function toAction(row: ActionRow): IntegrationAction {
   };
 }
 
-async function getRow(id: number): Promise<ActionRow> {
-  const row = assertOk(await supabase().from("actions").select("*").eq("id", id).maybeSingle()) as ActionRow | null;
+async function getRow(userId: string, id: number): Promise<ActionRow> {
+  const row = assertOk(await owned(userId, "actions").select("*").eq("id", id).maybeSingle()) as ActionRow | null;
   if (!row) throw notFound("Integration not found.");
   return row;
 }
 
-export async function listActions(): Promise<IntegrationAction[]> {
-  const rows = assertOk(await supabase().from("actions").select("*").order("id", { ascending: true })) as ActionRow[];
+export async function listActions(userId: string): Promise<IntegrationAction[]> {
+  const rows = assertOk(await owned(userId, "actions").select("*").order("id", { ascending: true })) as ActionRow[];
   return rows.map(toAction);
 }
 
@@ -98,7 +98,7 @@ function bool(value: unknown, field: string): boolean | undefined {
   return value;
 }
 
-export async function createAction(input: Record<string, unknown>): Promise<IntegrationAction> {
+export async function createAction(userId: string, input: Record<string, unknown>): Promise<IntegrationAction> {
   const type = input.type === "notion" ? "notion" : input.type === "webhook" ? "webhook" : null;
   if (!type) throw badRequest("Choose a webhook or Notion integration.");
   const config: ActionConfig = {};
@@ -110,8 +110,7 @@ export async function createAction(input: Record<string, unknown>): Promise<Inte
   }
   const now = Date.now();
   const row = assertOk(
-    await supabase()
-      .from("actions")
+    await owned(userId, "actions")
       .insert({
         type,
         title: cleanTitle(input.title, type === "webhook" ? "Webhook" : "Notion"),
@@ -127,8 +126,8 @@ export async function createAction(input: Record<string, unknown>): Promise<Inte
   return toAction(row);
 }
 
-export async function updateAction(id: number, patch: Record<string, unknown>): Promise<IntegrationAction> {
-  const row = await getRow(id);
+export async function updateAction(userId: string, id: number, patch: Record<string, unknown>): Promise<IntegrationAction> {
+  const row = await getRow(userId, id);
   const config = parseConfig(row.config);
   if (row.type === "webhook" && patch.url !== undefined) config.url = cleanUrl(patch.url);
   if (row.type === "notion") {
@@ -136,8 +135,7 @@ export async function updateAction(id: number, patch: Record<string, unknown>): 
     if (patch.pageUrl !== undefined) config.pageId = parseNotionPageId(patch.pageUrl);
   }
   const updated = assertOk(
-    await supabase()
-      .from("actions")
+    await owned(userId, "actions")
       .update({
         title: patch.title === undefined ? row.title : cleanTitle(patch.title, row.title),
         config,
@@ -152,8 +150,8 @@ export async function updateAction(id: number, patch: Record<string, unknown>): 
   return toAction(updated);
 }
 
-export async function deleteAction(id: number): Promise<void> {
-  const deleted = assertOk(await supabase().from("actions").delete().eq("id", id).select("id")) as Array<{ id: number }>;
+export async function deleteAction(userId: string, id: number): Promise<void> {
+  const deleted = assertOk(await owned(userId, "actions").delete().eq("id", id).select("id")) as Array<{ id: number }>;
   if (deleted.length === 0) throw notFound("Integration not found.");
 }
 
@@ -258,9 +256,8 @@ async function sendToNotion(config: ActionConfig, title: string, text: string): 
   }
 }
 
-async function recordResult(id: number, error: unknown): Promise<void> {
-  await supabase()
-    .from("actions")
+async function recordResult(userId: string, id: number, error: unknown): Promise<void> {
+  await owned(userId, "actions")
     .update({
       last_status: error ? "error" : "ok",
       last_error: error ? (error instanceof Error ? error.message : "Failed").slice(0, 300) : null,
@@ -269,7 +266,7 @@ async function recordResult(id: number, error: unknown): Promise<void> {
     .eq("id", id);
 }
 
-async function execute(row: ActionRow, event: ActionEvent, note: Note, rewrite: Rewrite | null): Promise<void> {
+async function execute(userId: string, row: ActionRow, event: ActionEvent, note: Note, rewrite: Rewrite | null): Promise<void> {
   const config = parseConfig(row.config);
   try {
     if (row.type === "webhook") {
@@ -279,26 +276,26 @@ async function execute(row: ActionRow, event: ActionEvent, note: Note, rewrite: 
       const title = rewrite ? `${note.title || "Untitled note"} (${rewrite.label})` : note.title || "Untitled note";
       await sendToNotion(config, title, rewrite ? rewrite.text : note.transcript);
     }
-    await recordResult(row.id, null);
+    await recordResult(userId, row.id, null);
   } catch (error) {
-    await recordResult(row.id, error);
+    await recordResult(userId, row.id, error);
     throw error;
   }
 }
 
 /** Sends a note (or one of its rewrites) to an integration right away. */
-export async function runAction(actionId: number, noteId: number, rewriteId: number | null): Promise<IntegrationAction> {
-  const row = await getRow(actionId);
-  const note = await getNote(noteId);
+export async function runAction(userId: string, actionId: number, noteId: number, rewriteId: number | null): Promise<IntegrationAction> {
+  const row = await getRow(userId, actionId);
+  const note = await getNote(userId, noteId);
   if (!note) throw notFound("Note not found.");
-  const rewrite = rewriteId ? await getRewrite(noteId, rewriteId) : null;
+  const rewrite = rewriteId ? await getRewrite(userId, noteId, rewriteId) : null;
   if (rewriteId && !rewrite) throw notFound("Rewrite not found.");
-  await execute(row, "manual", note, rewrite);
-  return toAction(await getRow(actionId));
+  await execute(userId, row, "manual", note, rewrite);
+  return toAction(await getRow(userId, actionId));
 }
 
-export async function testAction(actionId: number): Promise<IntegrationAction> {
-  const row = await getRow(actionId);
+export async function testAction(userId: string, actionId: number): Promise<IntegrationAction> {
+  const row = await getRow(userId, actionId);
   const now = Date.now();
   const sample: Note = {
     id: 0,
@@ -319,20 +316,20 @@ export async function testAction(actionId: number): Promise<IntegrationAction> {
     createdAt: now,
     updatedAt: now,
   };
-  await execute(row, "test", sample, null);
-  return toAction(await getRow(actionId));
+  await execute(userId, row, "test", sample, null);
+  return toAction(await getRow(userId, actionId));
 }
 
-/** Fires integrations that subscribe to an event. Errors are recorded, never thrown. */
-export async function triggerAutomaticActions(kind: "transcript" | "rewrite", noteId: number, rewriteId: number | null): Promise<void> {
+/** Fires the owner's integrations that subscribe to an event. Errors are recorded, never thrown. */
+export async function triggerAutomaticActions(userId: string, kind: "transcript" | "rewrite", noteId: number, rewriteId: number | null): Promise<void> {
   const column = kind === "transcript" ? "on_transcript" : "on_rewrite";
-  const rows = assertOk(await supabase().from("actions").select("*").eq(column, true)) as ActionRow[];
+  const rows = assertOk(await owned(userId, "actions").select("*").eq(column, true)) as ActionRow[];
   if (rows.length === 0) return;
-  const note = await getNote(noteId);
+  const note = await getNote(userId, noteId);
   if (!note) return;
-  const rewrite = rewriteId ? await getRewrite(noteId, rewriteId) : null;
+  const rewrite = rewriteId ? await getRewrite(userId, noteId, rewriteId) : null;
   const event: ActionEvent = kind === "transcript" ? "note.transcribed" : "note.rewritten";
-  await Promise.all(rows.map((row) => execute(row, event, note, rewrite).catch((error) => {
+  await Promise.all(rows.map((row) => execute(userId, row, event, note, rewrite).catch((error) => {
       console.warn(`Integration "${row.title}" failed:`, error instanceof Error ? error.message : error);
   })));
 }

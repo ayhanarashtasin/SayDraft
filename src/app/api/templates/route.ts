@@ -1,5 +1,6 @@
 import { TEMPLATES, TEMPLATE_CATEGORIES } from "@/lib/templates";
-import { json, route } from "@/server/http";
+import { json } from "@/server/http";
+import { route } from "@/server/route";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

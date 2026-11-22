@@ -1,7 +1,7 @@
 import type { AppSettings } from "../lib/types.ts";
 import { isLanguageCode } from "../lib/languages.ts";
 import { badRequest } from "./http.ts";
-import { assertOk, supabase } from "./supabase.ts";
+import { assertOk, owned } from "./supabase.ts";
 
 const MODEL_PATTERN = /^[A-Za-z0-9._:/@+-]{1,120}$/;
 
@@ -23,9 +23,9 @@ export function defaultSettings(): AppSettings {
   };
 }
 
-export async function getSettings(): Promise<AppSettings> {
+export async function getSettings(userId: string): Promise<AppSettings> {
   const settings = defaultSettings();
-  const rows = assertOk(await supabase().from("settings").select("key, value")) as Array<{ key: string; value: string }>;
+  const rows = assertOk(await owned(userId, "settings").select("key, value")) as Array<{ key: string; value: string }>;
   const record = settings as unknown as Record<string, unknown>;
   for (const row of rows) {
     if (!(row.key in settings)) continue;
@@ -46,7 +46,9 @@ function validModel(value: unknown, field: string, allowEmpty: boolean): string 
   return model;
 }
 
+/** promptExists must only say yes for prompts that belong to this user. */
 export async function updateSettings(
+  userId: string,
   patch: Record<string, unknown>,
   promptExists: (id: number) => Promise<boolean>,
 ): Promise<AppSettings> {
@@ -78,17 +80,15 @@ export async function updateSettings(
   }
   const rows = Object.entries(changes).map(([key, value]) => ({ key, value: JSON.stringify(value) }));
   if (rows.length > 0) {
-    assertOk(await supabase().from("settings").upsert(rows, { onConflict: "key" }));
+    assertOk(await owned(userId, "settings").upsert(rows, { onConflict: "user_id,key" }));
   }
-  return getSettings();
+  return getSettings(userId);
 }
 
 /** Clears the auto-rewrite prompt if it points at a prompt that no longer exists. */
-export async function forgetPromptInSettings(promptId: number): Promise<void> {
-  const settings = await getSettings();
+export async function forgetPromptInSettings(userId: string, promptId: number): Promise<void> {
+  const settings = await getSettings(userId);
   if (settings.autoRewritePromptId === promptId) {
-    assertOk(
-      await supabase().from("settings").upsert([{ key: "autoRewritePromptId", value: "null" }], { onConflict: "key" }),
-    );
+    assertOk(await owned(userId, "settings").upsert([{ key: "autoRewritePromptId", value: "null" }], { onConflict: "user_id,key" }));
   }
 }

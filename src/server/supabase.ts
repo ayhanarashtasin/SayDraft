@@ -11,7 +11,7 @@ export const AUDIO_BUCKET = "audio";
 
 const globalState = globalThis as typeof globalThis & {
   __saydraftSupabase?: SupabaseClient;
-  __saydraftBooted?: Promise<void>;
+  __saydraftSeeded?: Map<string, Promise<void>>;
 };
 
 function resolveConfig(): { url: string; key: string } {
@@ -23,6 +23,23 @@ function resolveConfig(): { url: string; key: string } {
   return { url, key };
 }
 
+/** The project URL and the public (publishable) key that Supabase Auth needs. Used on the server only. */
+export function authConfig(): { url: string; key: string } {
+  const { url } = resolveConfig();
+  const key = (
+    process.env.SUPABASE_PUBLISHABLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
+    process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ""
+  ).trim();
+  if (!key) {
+    throw new Error("Sign-in is not configured. Set SUPABASE_PUBLISHABLE_KEY (the project's publishable key) in your environment.");
+  }
+  return { url, key };
+}
+
+/**
+ * The service-role client. It bypasses row level security, so it must never be used on a table of
+ * user data without an owner filter: use owned() for those tables.
+ */
 export function supabase(): SupabaseClient {
   if (!globalState.__saydraftSupabase) {
     const { url, key } = resolveConfig();
@@ -58,17 +75,47 @@ export function isUniqueError(error: { code?: string; message?: string } | null 
   return Boolean(error && (error.code === "23505" || /duplicate key|unique/i.test(error.message ?? "")));
 }
 
-/** Initializes a new workspace once, including when multiple instances start together. */
-export function ensurePrompts(): Promise<void> {
-  if (!globalState.__saydraftBooted) {
-    globalState.__saydraftBooted = (async () => {
-      const client = supabase();
+/** The tables that hold one user's data. Their rows carry a user_id. */
+export type OwnedTable = "notes" | "tags" | "prompts" | "dictionary" | "replacements" | "actions" | "settings";
+
+interface SelectOptions {
+  count?: "exact" | "planned" | "estimated";
+  head?: boolean;
+}
+
+/**
+ * Query builders for one user's rows. Reads, updates and deletes only ever see that user's rows, and
+ * inserts are stamped with the owner, so a query cannot forget the owner filter. (Child tables such as
+ * audio_files, note_tags and rewrites are reached through a note whose owner was checked first.)
+ */
+export function owned(userId: string, table: OwnedTable) {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userId)) {
+    throw new HttpError(401, "unauthenticated", "Sign in to continue.");
+  }
+  type Row = Record<string, unknown>;
+  const stamp = (rows: Row | Row[]) => (Array.isArray(rows) ? rows.map((row) => ({ ...row, user_id: userId })) : { ...rows, user_id: userId });
+  const from = () => supabase().from(table);
+  return {
+    select: <Q extends string = "*">(columns?: Q, options?: SelectOptions) => from().select<Q>((columns ?? "*") as Q, options).eq("user_id", userId),
+    insert: (rows: Row | Row[]) => from().insert(stamp(rows)),
+    upsert: (rows: Row | Row[], options?: { onConflict?: string; ignoreDuplicates?: boolean }) => from().upsert(stamp(rows), options),
+    update: (values: Row) => from().update(values).eq("user_id", userId),
+    delete: () => from().delete().eq("user_id", userId),
+  };
+}
+
+/** Gives a new account its built-in prompts once, including when several instances start together. */
+export function ensurePrompts(userId: string): Promise<void> {
+  const seeded = (globalState.__saydraftSeeded ??= new Map());
+  let boot = seeded.get(userId);
+  if (!boot) {
+    boot = (async () => {
       const marker = "default_prompts_initialized";
-      if (assertOk(await client.from("settings").select("key").eq("key", marker).maybeSingle())) return;
-      const existing = assertOk(await client.from("prompts").select("id").limit(1));
+      if (assertOk(await owned(userId, "settings").select("key").eq("key", marker).maybeSingle())) return;
+      const existing = assertOk(await owned(userId, "prompts").select("id").limit(1));
       if (!existing?.length) {
         const now = Date.now();
-        assertOk(await client.from("prompts").upsert(
+        assertOk(await owned(userId, "prompts").upsert(
           DEFAULT_PROMPTS.map((prompt, index) => ({
             title: prompt.title,
             description: prompt.description,
@@ -79,16 +126,17 @@ export function ensurePrompts(): Promise<void> {
             position: index,
             created_at: now,
             updated_at: now,
-          })), { onConflict: "builtin_key", ignoreDuplicates: true },
+          })), { onConflict: "user_id,builtin_key", ignoreDuplicates: true },
         ));
       }
-      assertOk(await client.from("settings").upsert({ key: marker, value: "true" }, { onConflict: "key", ignoreDuplicates: true }));
+      assertOk(await owned(userId, "settings").upsert({ key: marker, value: "true" }, { onConflict: "user_id,key", ignoreDuplicates: true }));
     })().catch((error) => {
-      globalState.__saydraftBooted = undefined;
+      seeded.delete(userId);
       throw error;
     });
+    seeded.set(userId, boot);
   }
-  return globalState.__saydraftBooted;
+  return boot;
 }
 
 // ------------------------------------------------------------------ storage helpers

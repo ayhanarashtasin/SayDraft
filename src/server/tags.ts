@@ -1,7 +1,7 @@
 import type { Tag } from "../lib/types.ts";
 import { TAG_TITLE_MAX } from "../lib/limits.ts";
 import { badRequest, conflict, notFound } from "./http.ts";
-import { assertOk, isUniqueError, supabase } from "./supabase.ts";
+import { assertOk, isUniqueError, owned, supabase } from "./supabase.ts";
 
 export const TAG_COLORS = [
   "#E11D48",
@@ -34,14 +34,19 @@ function cleanTitle(value: unknown): string {
   return title;
 }
 
-export async function listTags(): Promise<Tag[]> {
-  const client = supabase();
+export async function listTags(userId: string): Promise<Tag[]> {
   const rows = assertOk(
-    await client.from("tags").select("*").order("position", { ascending: true }).order("id", { ascending: true }),
+    await owned(userId, "tags").select("*").order("position", { ascending: true }).order("id", { ascending: true }),
   ) as TagRow[];
+  if (rows.length === 0) return [];
   const links = assertOk(
-    await client.from("note_tags").select("tag_id, notes!inner(archived)").eq("notes.archived", false),
-  ) as Array<{ tag_id: number }>;
+    await supabase()
+      .from("note_tags")
+      .select("tag_id, notes!inner(archived)")
+      .eq("notes.archived", false)
+      .eq("notes.user_id", userId)
+      .in("tag_id", rows.map((row) => Number(row.id))),
+  ) as unknown as Array<{ tag_id: number }>;
   const counts = new Map<number, number>();
   for (const link of links) counts.set(link.tag_id, (counts.get(link.tag_id) ?? 0) + 1);
   return rows.map((row) => ({
@@ -54,21 +59,20 @@ export async function listTags(): Promise<Tag[]> {
   }));
 }
 
-export async function tagExists(id: number): Promise<boolean> {
-  const { data } = await supabase().from("tags").select("id").eq("id", id).maybeSingle();
+export async function tagExists(userId: string, id: number): Promise<boolean> {
+  const { data } = await owned(userId, "tags").select("id").eq("id", id).maybeSingle();
   return Boolean(data);
 }
 
-export async function createTag(titleInput: unknown, colorInput: unknown): Promise<Tag> {
+export async function createTag(userId: string, titleInput: unknown, colorInput: unknown): Promise<Tag> {
   const title = cleanTitle(titleInput);
-  const existing = assertOk(await supabase().from("tags").select("position")) as Array<{ position: number }>;
+  const existing = assertOk(await owned(userId, "tags").select("position")) as Array<{ position: number }>;
   const color =
     typeof colorInput === "string" && COLOR_PATTERN.test(colorInput)
       ? colorInput.toUpperCase()
       : TAG_COLORS[existing.length % TAG_COLORS.length];
   const nextPos = existing.reduce((max, row) => Math.max(max, row.position), -1) + 1;
-  const { data, error } = await supabase()
-    .from("tags")
+  const { data, error } = await owned(userId, "tags")
     .insert({ title, color, position: nextPos, created_at: Date.now() })
     .select("*")
     .single();
@@ -80,8 +84,8 @@ export async function createTag(titleInput: unknown, colorInput: unknown): Promi
   return { id: Number(row.id), title: row.title, color: row.color, position: row.position, noteCount: 0, createdAt: Number(row.created_at) };
 }
 
-export async function updateTag(id: number, patch: Record<string, unknown>): Promise<Tag> {
-  if (!(await tagExists(id))) throw notFound("Tag not found.");
+export async function updateTag(userId: string, id: number, patch: Record<string, unknown>): Promise<Tag> {
+  if (!(await tagExists(userId, id))) throw notFound("Tag not found.");
   const updates: Record<string, unknown> = {};
   if (patch.title !== undefined) updates.title = cleanTitle(patch.title);
   if (patch.color !== undefined) {
@@ -89,23 +93,23 @@ export async function updateTag(id: number, patch: Record<string, unknown>): Pro
     updates.color = patch.color.toUpperCase();
   }
   if (Object.keys(updates).length > 0) {
-    const { error } = await supabase().from("tags").update(updates).eq("id", id);
+    const { error } = await owned(userId, "tags").update(updates).eq("id", id);
     if (error) {
       if (isUniqueError(error)) throw conflict("A tag with that name already exists.", "tag_exists");
       throw new Error(error.message);
     }
   }
-  const all = await listTags();
+  const all = await listTags(userId);
   return all.find((tag) => tag.id === id)!;
 }
 
-export async function deleteTag(id: number): Promise<void> {
-  const deleted = assertOk(await supabase().from("tags").delete().eq("id", id).select("id")) as Array<{ id: number }>;
+export async function deleteTag(userId: string, id: number): Promise<void> {
+  const deleted = assertOk(await owned(userId, "tags").delete().eq("id", id).select("id")) as Array<{ id: number }>;
   if (deleted.length === 0) throw notFound("Tag not found.");
 }
 
-/** Saves a new tag order (ids listed first come first). */
-export async function reorderTags(ids: number[]): Promise<Tag[]> {
-  await Promise.all(ids.map((id, index) => supabase().from("tags").update({ position: index }).eq("id", id)));
-  return listTags();
+/** Saves a new tag order (ids listed first come first). Ids that belong to someone else are ignored. */
+export async function reorderTags(userId: string, ids: number[]): Promise<Tag[]> {
+  await Promise.all(ids.map((id, index) => owned(userId, "tags").update({ position: index }).eq("id", id)));
+  return listTags(userId);
 }

@@ -14,10 +14,11 @@ import type {
   Tag,
 } from "../lib/types.ts";
 import { conflict, notFound } from "./http.ts";
-import { assertOk, assertWorkspaceWrite, copyAudioObject, deleteAudioObject, supabase } from "./supabase.ts";
+import { assertOk, assertWorkspaceWrite, copyAudioObject, deleteAudioObject, owned, supabase } from "./supabase.ts";
 
 export interface NoteRow {
   id: number;
+  user_id: string;
   title: string;
   transcript: string;
   status: NoteStatus;
@@ -110,11 +111,16 @@ export function toRewrite(row: RewriteRow): Rewrite {
   };
 }
 
-async function tagsForNotes(ids: number[]): Promise<Map<number, Tag[]>> {
+/** ids must already be notes of this user; the tag filter is a second guard. */
+async function tagsForNotes(userId: string, ids: number[]): Promise<Map<number, Tag[]>> {
   const result = new Map<number, Tag[]>();
   if (ids.length === 0) return result;
   const rows = assertOk(
-    await supabase().from("note_tags").select("note_id, tags(id, title, color, position, created_at)").in("note_id", ids),
+    await supabase()
+      .from("note_tags")
+      .select("note_id, tags!inner(id, title, color, position, created_at)")
+      .eq("tags.user_id", userId)
+      .in("note_id", ids),
   ) as unknown as Array<{ note_id: number; tags: TagRow | null }>;
   for (const row of rows) {
     if (!row.tags) continue;
@@ -137,7 +143,7 @@ export interface ListOptions {
   limit?: number;
 }
 
-export async function listNotes(options: ListOptions = {}): Promise<NoteListItem[]> {
+export async function listNotes(userId: string, options: ListOptions = {}): Promise<NoteListItem[]> {
   await recoverExpiredWork();
   const client = supabase();
   const orderCol = options.sortBy === "createdAt" ? "created_at" : "updated_at";
@@ -145,8 +151,7 @@ export async function listNotes(options: ListOptions = {}): Promise<NoteListItem
   const archived = options.filter === "archive";
 
   const rows = assertOk(
-    await client
-      .from("notes")
+    await owned(userId, "notes")
       .select("id, title, transcript, status, stage, progress, error, source, language, speakers, archived, created_at, updated_at")
       .eq("archived", archived)
       .order(orderCol, { ascending: false })
@@ -159,7 +164,7 @@ export async function listNotes(options: ListOptions = {}): Promise<NoteListItem
   const query = options.q?.trim().toLowerCase() ?? "";
 
   const [tagsMap, audioRows, rewriteRows] = await Promise.all([
-    tagsForNotes(ids),
+    tagsForNotes(userId, ids),
     assertOk(await client.from("audio_files").select("note_id, duration_sec").eq("uploaded", true).in("note_id", ids)) as Array<{
       note_id: number;
       duration_sec: number | null;
@@ -234,25 +239,38 @@ export async function listNotes(options: ListOptions = {}): Promise<NoteListItem
   return items;
 }
 
-export async function getNoteRow(id: number): Promise<NoteRow | null> {
+export async function getNoteRow(userId: string, id: number): Promise<NoteRow | null> {
+  return assertOk(await owned(userId, "notes").select("*").eq("id", id).maybeSingle()) as NoteRow | null;
+}
+
+/**
+ * For background jobs only (transcription runs without a signed-in request): the note whoever owns it.
+ * The caller must then use row.user_id for everything else it reads.
+ */
+export async function getNoteRowForJob(id: number): Promise<NoteRow | null> {
   return assertOk(await supabase().from("notes").select("*").eq("id", id).maybeSingle()) as NoteRow | null;
 }
 
-export async function noteExists(id: number): Promise<boolean> {
-  const { data } = await supabase().from("notes").select("id").eq("id", id).maybeSingle();
+export async function noteExists(userId: string, id: number): Promise<boolean> {
+  const { data } = await owned(userId, "notes").select("id").eq("id", id).maybeSingle();
   return Boolean(data);
 }
 
-export async function getNote(id: number): Promise<Note | null> {
+/** Every function that takes a note id from a client starts here: someone else's note is "not found". */
+async function assertNoteOwned(userId: string, noteId: number): Promise<void> {
+  if (!(await noteExists(userId, noteId))) throw notFound("Note not found.");
+}
+
+export async function getNote(userId: string, id: number): Promise<Note | null> {
   await recoverExpiredWork(id);
-  const row = await getNoteRow(id);
+  const row = await getNoteRow(userId, id);
   if (!row) return null;
   const [audioRows, rewriteRows, tagsMap] = await Promise.all([
-    listAudioRows(id),
+    audioRowsOf(id),
     assertOk(
       await supabase().from("rewrites").select("*").eq("note_id", id).order("created_at", { ascending: false }).order("id", { ascending: false }),
     ) as RewriteRow[],
-    tagsForNotes([id]),
+    tagsForNotes(userId, [id]),
   ]);
   const knownDurations = audioRows.map((audio) => audio.duration_sec).filter((value): value is number => typeof value === "number");
   return {
@@ -276,17 +294,18 @@ export async function getNote(id: number): Promise<Note | null> {
   };
 }
 
-export async function requireNote(id: number): Promise<Note> {
-  const note = await getNote(id);
+export async function requireNote(userId: string, id: number): Promise<Note> {
+  const note = await getNote(userId, id);
   if (!note) throw notFound("Note not found.");
   return note;
 }
 
-async function setNoteTags(noteId: number, tagIds: number[]): Promise<void> {
+/** The note must already be this user's. Tag ids that are not this user's tags are ignored. */
+async function setNoteTags(userId: string, noteId: number, tagIds: number[]): Promise<void> {
   const client = supabase();
   assertOk(await client.from("note_tags").delete().eq("note_id", noteId));
   if (tagIds.length === 0) return;
-  const valid = assertOk(await client.from("tags").select("id").in("id", tagIds)) as Array<{ id: number }>;
+  const valid = assertOk(await owned(userId, "tags").select("id").in("id", tagIds)) as Array<{ id: number }>;
   if (valid.length === 0) return;
   assertOk(
     await client
@@ -308,11 +327,10 @@ export interface CreateNoteInput {
   tagIds?: number[];
 }
 
-export async function createNote(input: CreateNoteInput): Promise<Note> {
+export async function createNote(userId: string, input: CreateNoteInput): Promise<Note> {
   const now = Date.now();
   const inserted = assertOk(
-    await supabase()
-      .from("notes")
+    await owned(userId, "notes")
       .insert({
         title: (input.title ?? "").trim(),
         transcript: input.transcript ?? "",
@@ -327,8 +345,8 @@ export async function createNote(input: CreateNoteInput): Promise<Note> {
       .single(),
   ) as { id: number };
   const noteId = Number(inserted.id);
-  if (input.tagIds?.length) await setNoteTags(noteId, input.tagIds);
-  return (await getNote(noteId))!;
+  if (input.tagIds?.length) await setNoteTags(userId, noteId, input.tagIds);
+  return (await getNote(userId, noteId))!;
 }
 
 export interface UpdateNoteInput {
@@ -338,15 +356,15 @@ export interface UpdateNoteInput {
   tagIds?: number[];
 }
 
-export async function updateNote(id: number, patch: UpdateNoteInput): Promise<Note | null> {
-  if (!(await noteExists(id))) return null;
+export async function updateNote(userId: string, id: number, patch: UpdateNoteInput): Promise<Note | null> {
+  if (!(await noteExists(userId, id))) return null;
   const updates: Record<string, unknown> = { updated_at: Date.now() };
   if (patch.title !== undefined) updates.title = patch.title.trim();
   if (patch.transcript !== undefined) updates.transcript = patch.transcript;
   if (patch.archived !== undefined) updates.archived = patch.archived;
-  assertOk(await supabase().from("notes").update(updates).eq("id", id));
-  if (patch.tagIds) await setNoteTags(id, patch.tagIds);
-  return getNote(id);
+  assertOk(await owned(userId, "notes").update(updates).eq("id", id));
+  if (patch.tagIds) await setNoteTags(userId, id, patch.tagIds);
+  return getNote(userId, id);
 }
 
 /** Only recovers work after its deadline, including work started by another instance. */
@@ -384,14 +402,21 @@ export function newAudioFileName(extension: string): string {
   return `${crypto.randomUUID()}.${safe}`;
 }
 
-export async function listAudioRows(noteId: number): Promise<AudioRow[]> {
+/** The uploaded audio of a note that was already checked to belong to the caller. */
+async function audioRowsOf(noteId: number): Promise<AudioRow[]> {
   return assertOk(
     await supabase().from("audio_files").select("*").eq("note_id", noteId).eq("uploaded", true)
       .order("position", { ascending: true }).order("id", { ascending: true }),
   ) as AudioRow[];
 }
 
-export async function getAudioRow(noteId: number, fileId: number, includeUnfinished = false): Promise<AudioRow | null> {
+export async function listAudioRows(userId: string, noteId: number): Promise<AudioRow[]> {
+  await assertNoteOwned(userId, noteId);
+  return audioRowsOf(noteId);
+}
+
+export async function getAudioRow(userId: string, noteId: number, fileId: number, includeUnfinished = false): Promise<AudioRow | null> {
+  if (!(await noteExists(userId, noteId))) return null;
   const query = supabase().from("audio_files").select("*").eq("id", fileId).eq("note_id", noteId);
   if (!includeUnfinished) query.eq("uploaded", true);
   return assertOk(
@@ -410,7 +435,8 @@ export interface NewAudioFile {
   transcript?: string | null;
 }
 
-export async function insertAudioFile(noteId: number, file: NewAudioFile): Promise<AudioFile> {
+export async function insertAudioFile(userId: string, noteId: number, file: NewAudioFile): Promise<AudioFile> {
+  await assertNoteOwned(userId, noteId);
   const existing = assertOk(await supabase().from("audio_files").select("position").eq("note_id", noteId)) as Array<{ position: number }>;
   const nextPosition = existing.reduce((max, row) => Math.max(max, row.position), -1) + 1;
   const row = assertOk(
@@ -435,7 +461,8 @@ export async function insertAudioFile(noteId: number, file: NewAudioFile): Promi
   return toAudio(row);
 }
 
-export async function deleteAudioFile(noteId: number, fileId: number): Promise<boolean> {
+export async function deleteAudioFile(userId: string, noteId: number, fileId: number): Promise<boolean> {
+  if (!(await noteExists(userId, noteId))) return false;
   await recoverExpiredWork(noteId);
   const fileName = assertWorkspaceWrite(await supabase().rpc("remove_note_audio", {
     p_note_id: noteId, p_file_id: fileId, p_now: Date.now(),
@@ -458,7 +485,12 @@ export interface NewRewrite {
   text?: string;
 }
 
-export async function insertRewrite(noteId: number, input: NewRewrite): Promise<Rewrite> {
+export async function insertRewrite(userId: string, noteId: number, input: NewRewrite): Promise<Rewrite> {
+  await assertNoteOwned(userId, noteId);
+  if (input.promptId !== null) {
+    const { data } = await owned(userId, "prompts").select("id").eq("id", input.promptId).maybeSingle();
+    if (!data) throw notFound("That prompt no longer exists.");
+  }
   const now = Date.now();
   const row = assertOk(
     await supabase()
@@ -483,20 +515,24 @@ export async function insertRewrite(noteId: number, input: NewRewrite): Promise<
   return toRewrite(row);
 }
 
-export async function getRewriteById(id: number): Promise<Rewrite | null> {
+/** A rewrite is the caller's only if its note is. */
+export async function getRewriteById(userId: string, id: number): Promise<Rewrite | null> {
   const row = assertOk(await supabase().from("rewrites").select("*").eq("id", id).maybeSingle()) as RewriteRow | null;
-  return row ? toRewrite(row) : null;
+  if (!row || !(await noteExists(userId, Number(row.note_id)))) return null;
+  return toRewrite(row);
 }
 
-export async function getRewrite(noteId: number, rewriteId: number): Promise<Rewrite | null> {
-  const rewrite = await getRewriteById(rewriteId);
+export async function getRewrite(userId: string, noteId: number, rewriteId: number): Promise<Rewrite | null> {
+  const rewrite = await getRewriteById(userId, rewriteId);
   return rewrite && rewrite.noteId === noteId ? rewrite : null;
 }
 
 export async function updateRewrite(
+  userId: string,
   id: number,
   patch: { text?: string; status?: RewriteStatus; error?: string | null },
 ): Promise<Rewrite | null> {
+  if (!(await getRewriteById(userId, id))) return null;
   const updates: Record<string, unknown> = { updated_at: Date.now() };
   if (patch.text !== undefined) updates.text = patch.text;
   if (patch.status !== undefined) updates.status = patch.status;
@@ -509,7 +545,8 @@ export async function updateRewrite(
   return toRewrite(row);
 }
 
-export async function deleteRewrite(noteId: number, rewriteId: number): Promise<boolean> {
+export async function deleteRewrite(userId: string, noteId: number, rewriteId: number): Promise<boolean> {
+  if (!(await noteExists(userId, noteId))) return false;
   const deleted = assertOk(
     await supabase().from("rewrites").delete().eq("id", rewriteId).eq("note_id", noteId).select("id"),
   ) as Array<{ id: number }>;
@@ -520,23 +557,34 @@ export async function deleteRewrite(noteId: number, rewriteId: number): Promise<
 
 // ---------------------------------------------------------------- bulk operations
 
-export async function deleteNotes(ids: number[]): Promise<number> {
-  if (ids.length === 0) return 0;
-  const result = assertOk(await supabase().rpc("delete_workspace_notes", { p_note_ids: ids })) as { deleted: number; audio: string[] };
+/** Only ids of this user's own notes reach the database function. */
+async function ownedNoteIds(userId: string, ids: number[]): Promise<number[]> {
+  if (ids.length === 0) return [];
+  const rows = assertOk(await owned(userId, "notes").select("id").in("id", ids)) as Array<{ id: number }>;
+  return rows.map((row) => Number(row.id));
+}
+
+export async function deleteNotes(userId: string, ids: number[]): Promise<number> {
+  const mine = await ownedNoteIds(userId, ids);
+  if (mine.length === 0) return 0;
+  const result = assertOk(await supabase().rpc("delete_workspace_notes", { p_note_ids: mine })) as { deleted: number; audio: string[] };
   await Promise.all(result.audio.map(deleteAudioObject));
   return result.deleted;
 }
 
-export async function archiveNotes(ids: number[], archived: boolean): Promise<number> {
+export async function archiveNotes(userId: string, ids: number[], archived: boolean): Promise<number> {
   if (ids.length === 0) return 0;
   const updated = assertOk(
-    await supabase().from("notes").update({ archived, updated_at: Date.now() }).in("id", ids).select("id"),
+    await owned(userId, "notes").update({ archived, updated_at: Date.now() }).in("id", ids).select("id"),
   ) as Array<{ id: number }>;
   return updated.length;
 }
 
-export async function tagNotes(ids: number[], tagId: number, add: boolean): Promise<number> {
+export async function tagNotes(userId: string, noteIds: number[], tagId: number, add: boolean): Promise<number> {
+  const ids = await ownedNoteIds(userId, noteIds);
   if (ids.length === 0) return 0;
+  const { data: tag } = await owned(userId, "tags").select("id").eq("id", tagId).maybeSingle();
+  if (!tag) throw notFound("Tag not found.");
   const client = supabase();
   if (add) {
     const existing = assertOk(
@@ -568,10 +616,10 @@ export interface MergeOptions {
 }
 
 /** Combines notes (oldest first) into a new note with their text, audio and tags. */
-export async function mergeNotes(ids: number[], options: MergeOptions = {}): Promise<Note> {
+export async function mergeNotes(userId: string, ids: number[], options: MergeOptions = {}): Promise<Note> {
   const client = supabase();
   const rows = assertOk(
-    await client.from("notes").select("*").in("id", ids).order("created_at", { ascending: true }).order("id", { ascending: true }),
+    await owned(userId, "notes").select("*").in("id", ids).order("created_at", { ascending: true }).order("id", { ascending: true }),
   ) as NoteRow[];
   if (rows.length < 2) throw notFound("Select at least two existing notes to merge.");
   if (rows.some((row) => row.status === "processing" || row.status === "uploading")) {
@@ -587,7 +635,7 @@ export async function mergeNotes(ids: number[], options: MergeOptions = {}): Pro
   const copies: Array<{ source: AudioRow; fileName: string }> = [];
   try {
     for (const row of rows) {
-      for (const audio of await listAudioRows(Number(row.id))) {
+      for (const audio of await audioRowsOf(Number(row.id))) {
         const extension = path.extname(audio.file_name).slice(1) || "bin";
         const fileName = newAudioFileName(extension);
         await copyAudioObject(audio.file_name, fileName);
@@ -600,7 +648,7 @@ export async function mergeNotes(ids: number[], options: MergeOptions = {}): Pro
   }
 
   const languages = new Set(rows.map((row) => row.language).filter(Boolean));
-  const note = await createNote({
+  const note = await createNote(userId, {
     title,
     transcript,
     source: "merge",
@@ -609,7 +657,7 @@ export async function mergeNotes(ids: number[], options: MergeOptions = {}): Pro
     tagIds,
   });
   for (const copy of copies) {
-    await insertAudioFile(note.id, {
+    await insertAudioFile(userId, note.id, {
       fileName: copy.fileName,
       mime: copy.source.mime,
       size: copy.source.size,
@@ -620,11 +668,11 @@ export async function mergeNotes(ids: number[], options: MergeOptions = {}): Pro
       transcript: copy.source.transcript,
     });
   }
-  if (options.archiveOriginals) await archiveNotes(rowIds, true);
-  return (await getNote(note.id))!;
+  if (options.archiveOriginals) await archiveNotes(userId, rowIds, true);
+  return (await getNote(userId, note.id))!;
 }
 
-export async function libraryStats(): Promise<{
+export async function libraryStats(userId: string): Promise<{
   notes: number;
   archived: number;
   audioFiles: number;
@@ -634,9 +682,11 @@ export async function libraryStats(): Promise<{
 }> {
   const client = supabase();
   const [notesRows, audioRows, rewritesRes] = await Promise.all([
-    assertOk(await client.from("notes").select("archived")) as Array<{ archived: boolean }>,
-    assertOk(await client.from("audio_files").select("size, duration_sec").eq("uploaded", true)) as Array<{ size: number; duration_sec: number | null }>,
-    client.from("rewrites").select("id", { count: "exact", head: true }),
+    assertOk(await owned(userId, "notes").select("archived")) as Array<{ archived: boolean }>,
+    assertOk(
+      await client.from("audio_files").select("size, duration_sec, notes!inner(user_id)").eq("notes.user_id", userId).eq("uploaded", true),
+    ) as unknown as Array<{ size: number; duration_sec: number | null }>,
+    client.from("rewrites").select("id, notes!inner(user_id)", { count: "exact", head: true }).eq("notes.user_id", userId),
   ]);
   return {
     notes: notesRows.length,

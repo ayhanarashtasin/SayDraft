@@ -143,11 +143,26 @@ let base;
 let workDir;
 let storage;
 let database;
-const password = randomBytes(32).toString("hex");
-const authorization = `Basic ${Buffer.from(`saydraft:${password}`).toString("base64")}`;
+const signupCode = randomBytes(24).toString("base64url");
+const accountPassword = "a long test password 123";
+/** The Cookie header of the signed-in test account that most tests use. */
+let session = "";
 
 function appFetch(url, options = {}) {
-  return fetch(url, { ...options, headers: { Authorization: authorization, ...options.headers } });
+  return fetch(url, { ...options, headers: { ...(session ? { Cookie: session } : {}), ...options.headers } });
+}
+
+/** Creates an account through the sign-up route and returns its session as a Cookie header. */
+async function signUpAccount(email) {
+  const response = await fetch(`${base}/api/auth/signup`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: "Test", email, password: accountPassword, inviteCode: signupCode }),
+  });
+  assert.equal(response.status, 201, await response.clone().text());
+  const cookie = response.headers.getSetCookie().map((line) => line.split(";")[0]).join("; ");
+  assert.ok(cookie, "sign-up sets a session cookie");
+  return cookie;
 }
 
 async function api(pathname, { method, json, headers = {}, body } = {}) {
@@ -231,7 +246,8 @@ before(async () => {
       ...process.env,
       SUPABASE_URL: database.url,
       SUPABASE_SECRET_KEY: database.key,
-      SAYDRAFT_PASSWORD: password,
+      SUPABASE_PUBLISHABLE_KEY: database.publishableKey,
+      SIGNUP_CODE: signupCode,
       WORKFLOW_TARGET_WORLD: "local",
       WORKFLOW_LOCAL_DATA_DIR: path.join(tmp, "workflow"),
       WORKFLOW_LOCAL_BASE_URL: base,
@@ -251,13 +267,14 @@ before(async () => {
   const deadline = Date.now() + 40_000;
   for (;;) {
     try {
-      if ((await appFetch(`${base}/api/status`)).ok) break;
+      if ((await fetch(`${base}/login`)).ok) break;
     } catch {
       // still starting
     }
     if (Date.now() > deadline) throw new Error(`Server did not start:\n${log}`);
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
+  session = await signUpAccount("owner@example.test");
 });
 
 after(async () => {
@@ -285,14 +302,21 @@ test("status reports the free Pro+ plan, the API key and ffmpeg", async () => {
   assert.equal(data.settings.transcribeModel, "gpt-4o-mini-transcribe");
 });
 
-test("requests from other sites and unknown hosts are rejected", async () => {
-  for (const pathname of ["/", "/api/notes", "/api/export"]) {
+test("signed-out visitors, other sites and unknown hosts are rejected", async () => {
+  for (const pathname of ["/api/notes", "/api/export", "/api/status", "/api/auth/me"]) {
     const response = await fetch(base + pathname);
     assert.equal(response.status, 401, pathname);
-    assert.match(response.headers.get("www-authenticate"), /^Basic /);
+    assert.equal((await response.json()).error.code, "unauthenticated", pathname);
     assert.equal(response.headers.get("cache-control"), "no-store");
   }
-  assert.equal((await appFetch(base, { headers: { Authorization: "Basic invalid" } })).status, 401);
+  const page = await fetch(`${base}/settings/tags`, { redirect: "manual" });
+  assert.equal(page.status, 307);
+  const location = new URL(page.headers.get("location"));
+  assert.equal(location.pathname, "/login");
+  assert.equal(location.searchParams.get("next"), "/settings/tags");
+  assert.equal((await fetch(`${base}/login`)).status, 200);
+  assert.equal((await fetch(`${base}/signup`)).status, 200);
+  assert.equal((await appFetch(`${base}/api/notes`, { headers: { Cookie: "sb-forged-auth-token=base64-AAAA" } })).status, 401);
   const wrongHost = await new Promise((resolve, reject) => {
     const req = http.request(`${base}/api/notes`, { headers: { Host: "evil.example" } }, (res) => {
       res.resume();
@@ -309,6 +333,77 @@ test("requests from other sites and unknown hosts are rejected", async () => {
   const sameOrigin = await api("/api/notes", { json: { kind: "text", transcript: "Same origin works" }, headers: { Origin: base, "Sec-Fetch-Site": "same-origin" } });
   assert.equal(sameOrigin.status, 201);
   await api(`/api/notes/${sameOrigin.data.note.id}`, { method: "DELETE" });
+});
+
+test("accounts: invite code, sign-up rules, login, logout and revoked sessions", async () => {
+  const post = (pathname, json, headers = {}) =>
+    fetch(base + pathname, { method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify(json) });
+  const strong = accountPassword;
+  assert.equal((await post("/api/auth/signup", { email: "x@example.test", password: strong, inviteCode: "wrong" })).status, 403);
+  assert.equal((await post("/api/auth/signup", { email: "x@example.test", password: strong })).status, 403);
+  assert.equal((await post("/api/auth/signup", { email: "x@example.test", password: "short", inviteCode: signupCode })).status, 400);
+  assert.equal((await post("/api/auth/signup", { email: "not-an-email", password: strong, inviteCode: signupCode })).status, 400);
+  assert.equal((await post("/api/auth/signup", { email: "OWNER@example.test", password: strong, inviteCode: signupCode })).status, 409);
+  assert.equal((await post("/api/auth/login", { email: "owner@example.test", password: "not the password" })).status, 401);
+
+  const login = await post("/api/auth/login", { email: "owner@example.test", password: strong });
+  assert.equal(login.status, 200);
+  const cookies = login.headers.getSetCookie();
+  assert.ok(cookies.length > 0 && cookies.every((line) => /HttpOnly/i.test(line) && /SameSite=Lax/i.test(line)), "session cookies are HttpOnly and SameSite=Lax");
+  assert.match(login.headers.get("cache-control"), /no-store/);
+  const second = cookies.map((line) => line.split(";")[0]).join("; ");
+  assert.equal((await fetch(`${base}/api/auth/me`, { headers: { Cookie: second } })).status, 200);
+
+  // Logging out ends only this device's session, and it takes effect immediately.
+  const logout = await post("/api/auth/logout", {}, { Cookie: second });
+  assert.equal(logout.status, 200);
+  assert.ok(logout.headers.getSetCookie().every((line) => /Max-Age=0/i.test(line)), "logout clears the cookies");
+  assert.equal((await fetch(`${base}/api/auth/me`, { headers: { Cookie: second } })).status, 401, "a logged-out session is rejected at once");
+  assert.equal((await appFetch(`${base}/api/auth/me`)).status, 200, "the other session keeps working");
+
+  // A request from another website cannot log anyone in.
+  assert.equal((await post("/api/auth/login", { email: "owner@example.test", password: strong }, { Origin: "https://evil.example" })).status, 403);
+});
+
+test("another account cannot see or change this account's data", async () => {
+  const note = await api("/api/notes", { json: { title: "Private", transcript: "only the owner may read this" } });
+  const tag = await api("/api/tags", { json: { title: "Mine" } });
+  assert.equal(note.status, 201);
+  const noteId = note.data.note.id;
+  const mine = (await api("/api/prompts")).data.prompts;
+
+  const other = await signUpAccount("other@example.test");
+  const asOther = async (method, pathname, json) => {
+    const response = await fetch(base + pathname, {
+      method,
+      headers: { Cookie: other, ...(json ? { "Content-Type": "application/json" } : {}) },
+      body: json ? JSON.stringify(json) : undefined,
+    });
+    return { status: response.status, data: await response.json().catch(() => null) };
+  };
+  assert.equal((await asOther("GET", `/api/notes/${noteId}`)).status, 404);
+  assert.equal((await asOther("PATCH", `/api/notes/${noteId}`, { title: "taken over" })).status, 404);
+  assert.equal((await asOther("DELETE", `/api/notes/${noteId}`)).status, 404);
+  assert.equal((await asOther("POST", `/api/notes/${noteId}/rewrites`, { instruction: "x" })).status, 404);
+  assert.equal((await asOther("POST", `/api/notes/${noteId}/transcribe`, {})).status, 404);
+  assert.equal((await asOther("DELETE", `/api/tags/${tag.data.tag.id}`)).status, 404);
+  assert.equal((await asOther("DELETE", `/api/prompts/${mine[0].id}`)).status, 404);
+  assert.equal((await asOther("POST", "/api/notes/bulk", { action: "delete", ids: [noteId] })).data.changed, 0);
+  assert.equal((await asOther("GET", "/api/notes")).data.notes.length, 0);
+  assert.equal((await asOther("GET", "/api/tags")).data.tags.length, 0);
+  assert.equal((await asOther("POST", "/api/tags", { title: "Mine" })).status, 201, "tag names are unique per account, not shared");
+  const theirs = (await asOther("GET", "/api/prompts")).data.prompts;
+  assert.ok(theirs.length >= 10, "every account gets its own built-in prompts");
+  assert.ok(theirs.every((prompt) => !mine.some((own) => own.id === prompt.id)));
+  const attach = await asOther("POST", "/api/notes", { title: "Theirs", transcript: "x", tagIds: [tag.data.tag.id] });
+  assert.equal(attach.data.note.tags.length, 0, "someone else's tag cannot be attached");
+  await asOther("DELETE", `/api/notes/${attach.data.note.id}`);
+
+  const stillMine = await api(`/api/notes/${noteId}`);
+  assert.equal(stillMine.status, 200);
+  assert.equal(stillMine.data.note.transcript, "only the owner may read this");
+  await api(`/api/notes/${noteId}`, { method: "DELETE" });
+  await api(`/api/tags/${tag.data.tag.id}`, { method: "DELETE" });
 });
 
 let recordingNote;

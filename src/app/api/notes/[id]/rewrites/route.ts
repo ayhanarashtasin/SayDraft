@@ -1,13 +1,14 @@
 import { after } from "next/server";
-import { HttpError, badRequest, parseId, readJson, route } from "@/server/http";
+import { HttpError, badRequest, parseId, readJson } from "@/server/http";
 import { getRewriteById } from "@/server/notes";
 import { type RewriteRequest, prepareRewrite } from "@/server/rewrite";
+import { route } from "@/server/route";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
-export const POST = route<{ id: string }>(async (request, params) => {
+export const POST = route<{ id: string }>(async (request, params, user) => {
   const noteId = parseId(params.id, "note id");
   const body = await readJson(request);
   const rewriteRequest: RewriteRequest = {};
@@ -24,7 +25,7 @@ export const POST = route<{ id: string }>(async (request, params) => {
     rewriteRequest.sourceRewriteId = parseId(String(body.sourceRewriteId), "source version");
   }
 
-  const prepared = await prepareRewrite(noteId, rewriteRequest);
+  const prepared = await prepareRewrite(user.id, noteId, rewriteRequest);
   const encoder = new TextEncoder();
   let open = true;
 
@@ -50,7 +51,7 @@ export const POST = route<{ id: string }>(async (request, params) => {
               code: known ? error.code : "rewrite_failed",
               message: known ? error.message : "The rewrite failed. Try again.",
             },
-            rewrite: await getRewriteById(prepared.rewrite.id).catch(() => null),
+            rewrite: await getRewriteById(user.id, prepared.rewrite.id).catch(() => null),
           });
         })
         .finally(() => {

@@ -9,7 +9,7 @@ import {
 import type { AudioFile } from "../lib/types.ts";
 import { hasFfmpeg } from "./audio.ts";
 import { HttpError, badRequest, conflict, notFound, optionalString } from "./http.ts";
-import { type AudioRow, deleteAudioFile, getAudioRow, newAudioFileName, recoverExpiredWork, toAudio } from "./notes.ts";
+import { type AudioRow, deleteAudioFile, getAudioRow, getNoteRow, newAudioFileName, recoverExpiredWork, toAudio } from "./notes.ts";
 import { AUDIO_BUCKET, assertWorkspaceWrite, supabase } from "./supabase.ts";
 
 export function maxUploadBytes(): number {
@@ -29,7 +29,8 @@ function resumableEndpoint(): string {
 }
 
 /** Reserves a private object for a single note. File bytes go from the browser to Storage. */
-export async function beginAudioUpload(noteId: number, input: Record<string, unknown>) {
+export async function beginAudioUpload(userId: string, noteId: number, input: Record<string, unknown>) {
+  if (!(await getNoteRow(userId, noteId))) throw notFound("Note not found.");
   const originalName = optionalString(input.name, "File name", 200)?.trim() || null;
   const mime = baseMime(optionalString(input.type, "File type", 200));
   const extension = audioExtension(mime, originalName);
@@ -56,7 +57,7 @@ export async function beginAudioUpload(noteId: number, input: Record<string, unk
   }).single()) as AudioRow;
   const { data, error } = await client.storage.from(AUDIO_BUCKET).createSignedUploadUrl(fileName);
   if (error || !data) {
-    await deleteAudioFile(noteId, row.id);
+    await deleteAudioFile(userId, noteId, row.id);
     throw new HttpError(502, "storage_unavailable", "Could not start the upload. Try again.");
   }
   return {
@@ -70,8 +71,8 @@ export async function beginAudioUpload(noteId: number, input: Record<string, unk
 }
 
 /** Confirms the reserved object arrived before it can appear in the note or be transcribed. */
-export async function finishAudioUpload(noteId: number, fileId: number): Promise<AudioFile> {
-  const row = await getAudioRow(noteId, fileId, true);
+export async function finishAudioUpload(userId: string, noteId: number, fileId: number): Promise<AudioFile> {
+  const row = await getAudioRow(userId, noteId, fileId, true);
   if (!row) throw notFound("Audio not found.");
   if (row.uploaded) return toAudio(row);
   const client = supabase();

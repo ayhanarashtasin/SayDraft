@@ -1,16 +1,18 @@
-import { badRequest, json, optionalBoolean, readJson, route } from "@/server/http";
+import { badRequest, json, optionalBoolean, readJson } from "@/server/http";
 import { promptFromTemplate } from "@/server/prompts";
+import { route } from "@/server/route";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /** Adds a gallery template to the user's prompts: { values?: { key: value }, favorite?: boolean } */
-export const POST = route<{ id: string }>(async (request, params) => {
+export const POST = route<{ id: string }>(async (request, params, user) => {
   const body = await readJson(request);
   if (body.values !== undefined && (typeof body.values !== "object" || body.values === null || Array.isArray(body.values))) {
     throw badRequest("values must be an object.");
   }
   const prompt = await promptFromTemplate(
+    user.id,
     params.id,
     body.values as Record<string, unknown> | undefined,
     optionalBoolean(body.favorite, "favorite") ?? false,

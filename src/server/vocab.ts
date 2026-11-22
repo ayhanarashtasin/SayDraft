@@ -1,7 +1,7 @@
 import type { DictionaryEntry, Replacement } from "../lib/types.ts";
 import { DICTIONARY_WORD_MAX, DICTIONARY_WORDS_MAX } from "../lib/limits.ts";
 import { badRequest, conflict, notFound } from "./http.ts";
-import { assertOk, isUniqueError, supabase } from "./supabase.ts";
+import { assertOk, isUniqueError, owned } from "./supabase.ts";
 
 // ---------------------------------------------------------------- dictionary
 
@@ -11,8 +11,8 @@ interface DictionaryRow {
   created_at: number;
 }
 
-export async function listDictionary(): Promise<DictionaryEntry[]> {
-  const rows = assertOk(await supabase().from("dictionary").select("*")) as DictionaryRow[];
+export async function listDictionary(userId: string): Promise<DictionaryEntry[]> {
+  const rows = assertOk(await owned(userId, "dictionary").select("*")) as DictionaryRow[];
   return rows
     .map((row) => ({ id: Number(row.id), word: row.word, createdAt: Number(row.created_at) }))
     .sort((a, b) => a.word.localeCompare(b.word, undefined, { sensitivity: "base" }));
@@ -28,10 +28,10 @@ export function validateDictionaryWord(raw: unknown): string {
 }
 
 /** Adds words, skipping duplicates. Returns how many were new. */
-export async function addDictionaryWords(rawWords: unknown[]): Promise<{ added: number; entries: DictionaryEntry[] }> {
+export async function addDictionaryWords(userId: string, rawWords: unknown[]): Promise<{ added: number; entries: DictionaryEntry[] }> {
   if (rawWords.length > 100) throw badRequest("Add up to 100 entries at a time.");
   const words = rawWords.map(validateDictionaryWord);
-  const existing = await listDictionary();
+  const existing = await listDictionary(userId);
   const seen = new Set(existing.map((entry) => entry.word.toLowerCase()));
   const now = Date.now();
   const toInsert: Array<{ word: string; created_at: number }> = [];
@@ -42,14 +42,14 @@ export async function addDictionaryWords(rawWords: unknown[]): Promise<{ added: 
     toInsert.push({ word, created_at: now });
   }
   if (toInsert.length > 0) {
-    assertOk(await supabase().from("dictionary").insert(toInsert));
+    assertOk(await owned(userId, "dictionary").insert(toInsert));
   }
-  return { added: toInsert.length, entries: await listDictionary() };
+  return { added: toInsert.length, entries: await listDictionary(userId) };
 }
 
-export async function updateDictionaryWord(id: number, raw: unknown): Promise<DictionaryEntry> {
+export async function updateDictionaryWord(userId: string, id: number, raw: unknown): Promise<DictionaryEntry> {
   const word = validateDictionaryWord(raw);
-  const { data, error } = await supabase().from("dictionary").update({ word }).eq("id", id).select("*").maybeSingle();
+  const { data, error } = await owned(userId, "dictionary").update({ word }).eq("id", id).select("*").maybeSingle();
   if (error) {
     if (isUniqueError(error)) throw conflict("That word is already in your dictionary.");
     throw new Error(error.message);
@@ -59,16 +59,16 @@ export async function updateDictionaryWord(id: number, raw: unknown): Promise<Di
   return { id: Number(row.id), word: row.word, createdAt: Number(row.created_at) };
 }
 
-export async function deleteDictionaryWord(id: number): Promise<void> {
-  const deleted = assertOk(await supabase().from("dictionary").delete().eq("id", id).select("id")) as Array<{ id: number }>;
+export async function deleteDictionaryWord(userId: string, id: number): Promise<void> {
+  const deleted = assertOk(await owned(userId, "dictionary").delete().eq("id", id).select("id")) as Array<{ id: number }>;
   if (deleted.length === 0) throw notFound("Dictionary entry not found.");
 }
 
 /** A short vocabulary hint for the transcription model. */
-export async function dictionaryPrompt(maxChars = 900): Promise<string | undefined> {
+export async function dictionaryPrompt(userId: string, maxChars = 900): Promise<string | undefined> {
   const words: string[] = [];
   let length = 0;
-  for (const entry of await listDictionary()) {
+  for (const entry of await listDictionary(userId)) {
     if (length + entry.word.length + 2 > maxChars) break;
     words.push(entry.word);
     length += entry.word.length + 2;
@@ -96,8 +96,8 @@ function toReplacement(row: ReplacementRow): Replacement {
   };
 }
 
-export async function listReplacements(): Promise<Replacement[]> {
-  const rows = assertOk(await supabase().from("replacements").select("*")) as ReplacementRow[];
+export async function listReplacements(userId: string): Promise<Replacement[]> {
+  const rows = assertOk(await owned(userId, "replacements").select("*")) as ReplacementRow[];
   return rows.map(toReplacement).sort((a, b) => a.find.localeCompare(b.find, undefined, { sensitivity: "base" }));
 }
 
@@ -114,9 +114,8 @@ function cleanReplaceWith(raw: unknown): string {
   return raw.trim();
 }
 
-export async function createReplacement(input: Record<string, unknown>): Promise<Replacement> {
-  const { data, error } = await supabase()
-    .from("replacements")
+export async function createReplacement(userId: string, input: Record<string, unknown>): Promise<Replacement> {
+  const { data, error } = await owned(userId, "replacements")
     .insert({
       find: cleanFind(input.find),
       replace_with: cleanReplaceWith(input.replaceWith),
@@ -132,9 +131,9 @@ export async function createReplacement(input: Record<string, unknown>): Promise
   return toReplacement(data as ReplacementRow);
 }
 
-export async function updateReplacement(id: number, patch: Record<string, unknown>): Promise<Replacement> {
+export async function updateReplacement(userId: string, id: number, patch: Record<string, unknown>): Promise<Replacement> {
   const existing = assertOk(
-    await supabase().from("replacements").select("*").eq("id", id).maybeSingle(),
+    await owned(userId, "replacements").select("*").eq("id", id).maybeSingle(),
   ) as ReplacementRow | null;
   if (!existing) throw notFound("Replacement not found.");
   const find = patch.find === undefined ? existing.find : cleanFind(patch.find);
@@ -144,8 +143,7 @@ export async function updateReplacement(id: number, patch: Record<string, unknow
     if (typeof patch.isActive !== "boolean") throw badRequest("isActive must be true or false.");
     isActive = patch.isActive;
   }
-  const { data, error } = await supabase()
-    .from("replacements")
+  const { data, error } = await owned(userId, "replacements")
     .update({ find, replace_with: replaceWith, is_active: isActive })
     .eq("id", id)
     .select("*")
@@ -157,7 +155,7 @@ export async function updateReplacement(id: number, patch: Record<string, unknow
   return toReplacement(data as ReplacementRow);
 }
 
-export async function deleteReplacement(id: number): Promise<void> {
-  const deleted = assertOk(await supabase().from("replacements").delete().eq("id", id).select("id")) as Array<{ id: number }>;
+export async function deleteReplacement(userId: string, id: number): Promise<void> {
+  const deleted = assertOk(await owned(userId, "replacements").delete().eq("id", id).select("id")) as Array<{ id: number }>;
   if (deleted.length === 0) throw notFound("Replacement not found.");
 }

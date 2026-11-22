@@ -6,7 +6,7 @@ import { listActions } from "./integrations.ts";
 import { getNote, listAudioRows } from "./notes.ts";
 import { listPrompts } from "./prompts.ts";
 import { getSettings } from "./settings.ts";
-import { assertOk, streamAudioObject, supabase } from "./supabase.ts";
+import { assertOk, owned, streamAudioObject } from "./supabase.ts";
 import { listTags } from "./tags.ts";
 import { listDictionary, listReplacements } from "./vocab.ts";
 import type { ZipEntry } from "./zip.ts";
@@ -35,27 +35,27 @@ function noteMarkdown(note: Note, audioNames: string[]): string {
   return `${lines.join("\n")}\n`;
 }
 
-async function* noteIds() {
+async function* noteIds(userId: string) {
   let lastId = 0;
   const pageSize = 200;
   for (;;) {
-    const rows = assertOk(await supabase().from("notes").select("id").gt("id", lastId).order("id").limit(pageSize)) as Array<{ id: number }>;
+    const rows = assertOk(await owned(userId, "notes").select("id").gt("id", lastId).order("id").limit(pageSize)) as Array<{ id: number }>;
     for (const row of rows) yield Number(row.id);
     if (rows.length < pageSize) return;
     lastId = Number(rows[rows.length - 1].id);
   }
 }
 
-/** Everything in the library: a JSON backup, one Markdown file per note, and the audio files. */
-export async function* exportEntries(signal?: AbortSignal): AsyncGenerator<ZipEntry> {
+/** Everything in this user's library: a JSON backup, one Markdown file per note, and the audio files. */
+export async function* exportEntries(userId: string, signal?: AbortSignal): AsyncGenerator<ZipEntry> {
   const exportedNotes: unknown[] = [];
   const audioItems: Array<{ name: string; fileName: string; modified: Date }> = [];
 
-  for await (const id of noteIds()) {
+  for await (const id of noteIds(userId)) {
     signal?.throwIfAborted();
-    const note = await getNote(id);
+    const note = await getNote(userId, id);
     if (!note) continue;
-    const fileRows = await listAudioRows(id);
+    const fileRows = await listAudioRows(userId, id);
     const audioNames = fileRows.map((file) => audioEntryName(note, file.position, file.file_name));
     fileRows.forEach((file, index) => {
       audioItems.push({ name: audioNames[index], fileName: file.file_name, modified: new Date(note.createdAt) });
@@ -69,12 +69,12 @@ export async function* exportEntries(signal?: AbortSignal): AsyncGenerator<ZipEn
   }
 
   const [settings, tags, prompts, dictionary, replacements, actions] = await Promise.all([
-    getSettings(),
-    listTags(),
-    listPrompts(),
-    listDictionary(),
-    listReplacements(),
-    listActions(),
+    getSettings(userId),
+    listTags(userId),
+    listPrompts(userId),
+    listDictionary(userId),
+    listReplacements(userId),
+    listActions(userId),
   ]);
 
   const backup = {
