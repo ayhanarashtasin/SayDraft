@@ -96,7 +96,7 @@ export function owned(userId: string, table: OwnedTable) {
   const stamp = (rows: Row | Row[]) => (Array.isArray(rows) ? rows.map((row) => ({ ...row, user_id: userId })) : { ...rows, user_id: userId });
   const from = () => supabase().from(table);
   return {
-    select: <Q extends string = "*">(columns?: Q, options?: SelectOptions) => from().select<Q>((columns ?? "*") as Q, options).eq("user_id", userId),
+    select: (columns = "*", options?: SelectOptions) => from().select<"*">(columns as "*", options).eq("user_id", userId),
     insert: (rows: Row | Row[]) => from().insert(stamp(rows)),
     upsert: (rows: Row | Row[], options?: { onConflict?: string; ignoreDuplicates?: boolean }) => from().upsert(stamp(rows), options),
     update: (values: Row) => from().update(values).eq("user_id", userId),
