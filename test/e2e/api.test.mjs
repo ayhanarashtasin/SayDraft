@@ -2,7 +2,6 @@
 // OpenAI, webhook and Notion servers, using real audio generated with ffmpeg.
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
@@ -143,7 +142,6 @@ let base;
 let workDir;
 let storage;
 let database;
-const signupCode = randomBytes(24).toString("base64url");
 const accountPassword = "a long test password 123";
 /** The Cookie header of the signed-in test account that most tests use. */
 let session = "";
@@ -157,7 +155,7 @@ async function signUpAccount(email) {
   const response = await fetch(`${base}/api/auth/signup`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name: "Test", email, password: accountPassword, inviteCode: signupCode }),
+    body: JSON.stringify({ name: "Test", email, password: accountPassword }),
   });
   assert.equal(response.status, 201, await response.clone().text());
   const cookie = response.headers.getSetCookie().map((line) => line.split(";")[0]).join("; ");
@@ -247,7 +245,6 @@ before(async () => {
       SUPABASE_URL: database.url,
       SUPABASE_SECRET_KEY: database.key,
       SUPABASE_PUBLISHABLE_KEY: database.publishableKey,
-      SIGNUP_CODE: signupCode,
       WORKFLOW_TARGET_WORLD: "local",
       WORKFLOW_LOCAL_DATA_DIR: path.join(tmp, "workflow"),
       WORKFLOW_LOCAL_BASE_URL: base,
@@ -335,15 +332,13 @@ test("signed-out visitors, other sites and unknown hosts are rejected", async ()
   await api(`/api/notes/${sameOrigin.data.note.id}`, { method: "DELETE" });
 });
 
-test("accounts: invite code, sign-up rules, login, logout and revoked sessions", async () => {
+test("accounts: sign-up rules, login, logout and revoked sessions", async () => {
   const post = (pathname, json, headers = {}) =>
     fetch(base + pathname, { method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify(json) });
   const strong = accountPassword;
-  assert.equal((await post("/api/auth/signup", { email: "x@example.test", password: strong, inviteCode: "wrong" })).status, 403);
-  assert.equal((await post("/api/auth/signup", { email: "x@example.test", password: strong })).status, 403);
-  assert.equal((await post("/api/auth/signup", { email: "x@example.test", password: "short", inviteCode: signupCode })).status, 400);
-  assert.equal((await post("/api/auth/signup", { email: "not-an-email", password: strong, inviteCode: signupCode })).status, 400);
-  assert.equal((await post("/api/auth/signup", { email: "OWNER@example.test", password: strong, inviteCode: signupCode })).status, 409);
+  assert.equal((await post("/api/auth/signup", { email: "x@example.test", password: "short" })).status, 400);
+  assert.equal((await post("/api/auth/signup", { email: "not-an-email", password: strong })).status, 400);
+  assert.equal((await post("/api/auth/signup", { email: "OWNER@example.test", password: strong })).status, 409);
   assert.equal((await post("/api/auth/login", { email: "owner@example.test", password: "not the password" })).status, 401);
 
   const login = await post("/api/auth/login", { email: "owner@example.test", password: strong });

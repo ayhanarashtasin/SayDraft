@@ -1,8 +1,7 @@
-import { createHash, timingSafeEqual } from "node:crypto";
 import { createServerClient, parseCookieHeader, serializeCookieHeader, type CookieOptions } from "@supabase/ssr";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { EMAIL_MAX, NAME_MAX, PASSWORD_MAX, PASSWORD_MIN, type SessionUser } from "../lib/auth-shared.ts";
-import { HttpError, badRequest, conflict, isHostedHost } from "./http.ts";
+import { HttpError, badRequest, conflict } from "./http.ts";
 import { authConfig, supabase } from "./supabase.ts";
 
 /**
@@ -13,7 +12,7 @@ import { authConfig, supabase } from "./supabase.ts";
  * - Every API request is checked with getUser(), which asks Supabase whether the session is still
  *   valid, so a logout (or a deleted account) takes effect immediately.
  * - The middleware only refreshes the session and gates pages, using the cheaper getClaims().
- * - Sign-up needs an invite code (SIGNUP_CODE), because every account spends the owner's OpenAI key.
+ * - Anyone can sign up with an email and password.
  */
 
 export type AuthUser = SessionUser;
@@ -143,29 +142,6 @@ function cleanName(value: unknown): string | null {
   return name || null;
 }
 
-/**
- * Sign-up needs the invite code on a public domain and in any production build (the Host header can be
- * forged, so it is not trusted to mean "this computer"). Only `next dev` on localhost may skip it.
- */
-export function signupCodeRequired(host: string): boolean {
-  return Boolean(process.env.SIGNUP_CODE?.trim()) || process.env.NODE_ENV === "production" || isHostedHost(host);
-}
-
-function checkInviteCode(request: Request, supplied: unknown): void {
-  const expected = process.env.SIGNUP_CODE?.trim() ?? "";
-  if (!expected) {
-    if (signupCodeRequired(request.headers.get("host") ?? "")) {
-      throw new HttpError(503, "signup_closed", "Sign-up is closed. The owner has to set SIGNUP_CODE on the server first.");
-    }
-    return;
-  }
-  if (expected.length < 16) throw new HttpError(503, "signup_closed", "Sign-up is closed: SIGNUP_CODE must be at least 16 characters.");
-  const digest = (text: string) => createHash("sha256").update(text).digest();
-  if (typeof supplied !== "string" || !timingSafeEqual(digest(supplied.trim()), digest(expected))) {
-    throw new HttpError(403, "invite_invalid", "That invite code is not valid.");
-  }
-}
-
 function signUpError(error: { code?: string; message: string }): HttpError {
   if (error.code === "email_exists" || error.code === "user_already_exists") {
     return conflict("An account with this email already exists. Log in instead.", "email_taken");
@@ -188,13 +164,12 @@ export async function signIn(request: Request, emailInput: unknown, passwordInpu
   return { user: toUser(data.user.id, data.user.email, data.user.user_metadata), pending };
 }
 
-/** Creates the account (when the invite code is right) and signs the new user in. */
+/** Creates the account and signs the new user in. */
 export async function signUp(request: Request, body: Record<string, unknown>): Promise<{ user: AuthUser; pending: PendingAuth }> {
   const email = cleanEmail(body.email);
   const password = cleanPassword(body.password);
   const name = cleanName(body.name);
-  checkInviteCode(request, body.inviteCode);
-  // Created through the admin API, already confirmed: the invite code is the gate, so no email round trip is needed.
+  // Created through the admin API, already confirmed, so no email round trip is needed.
   const { error } = await supabase().auth.admin.createUser({
     email,
     password,

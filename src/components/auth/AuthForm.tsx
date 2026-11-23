@@ -11,17 +11,14 @@ interface AuthFormProps {
   mode: "login" | "signup";
   /** Where to go after signing in (already checked to be a path on this site). */
   next: string;
-  /** Sign-up asks for the invite code the owner shares with the team. */
-  inviteRequired?: boolean;
 }
 
-export function AuthForm({ mode, next, inviteRequired = false }: AuthFormProps) {
+export function AuthForm({ mode, next }: AuthFormProps) {
   const signup = mode === "signup";
   const id = useId();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [inviteCode, setInviteCode] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -36,7 +33,7 @@ export function AuthForm({ mode, next, inviteRequired = false }: AuthFormProps) 
     setError(null);
     try {
       await api(signup ? "/api/auth/signup" : "/api/auth/login", {
-        json: signup ? { name, email, password, inviteCode } : { email, password },
+        json: signup ? { name, email, password } : { email, password },
       });
       // A full page load, so every request from here on carries the new session cookie.
       window.location.assign(safeNext(next));
@@ -129,28 +126,6 @@ export function AuthForm({ mode, next, inviteRequired = false }: AuthFormProps) 
                 </p>
               )}
             </div>
-
-            {signup && inviteRequired && (
-              <div className="flex flex-col gap-1.5">
-                <label htmlFor={`${id}-invite`} className="text-sm font-medium text-[var(--ink-subtle)]">
-                  Invite code
-                </label>
-                <input
-                  id={`${id}-invite`}
-                  value={inviteCode}
-                  onChange={(event) => setInviteCode(event.target.value)}
-                  autoComplete="off"
-                  autoCapitalize="none"
-                  spellCheck={false}
-                  required
-                  aria-describedby={`${id}-invite-hint`}
-                  className="field"
-                />
-                <p id={`${id}-invite-hint`} className="text-xs text-[var(--ink-muted)]">
-                  Ask the person who runs this workspace for the code.
-                </p>
-              </div>
-            )}
           </div>
 
           <p role="alert" aria-live="polite" className={error ? "mt-4 text-sm text-[var(--danger)]" : "sr-only"}>

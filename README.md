@@ -16,28 +16,27 @@ Saydraft is a private voice notes workspace. Record or upload audio, get a trans
 1. Push this directory as the GitHub repository root. For a repository that contains this app under `web/`, set **Root Directory** to `web` when importing the project.
 2. Create a Supabase project. Apply [the migrations](supabase/migrations/) in order with `supabase link --project-ref <project-ref>` and `supabase db push`, or run the SQL files in the Supabase SQL editor. They create the app tables, server-only permissions, private `audio` bucket, and the per-user ownership of every row (`0003_accounts.sql`). If the original schema was applied manually, `0001_init.sql` is safe to rerun. `0003_accounts.sql` is also safe to rerun, and it stops without changing anything if rows without an owner exist from an older shared workspace.
 3. In Vercel, import the GitHub repository with the **Next.js** preset. The lockfile and `package.json` select Node.js 24 and this repository enables Fluid compute. Keep **Automatically expose System Environment Variables** enabled so the app recognizes Vercel's deployment domains and the Workflow SDK can authenticate. [Vercel system environment variables](https://vercel.com/docs/environment-variables/system-environment-variables)
-4. Set the production environment variables below before deploying. Use separate Supabase credentials and a separate invite code for any preview that needs working data access.
-5. Open the deployment, choose **Create an account** and enter your invite code. Create a test note, upload a short recording, confirm transcription and audio playback, then try a rewrite and library export.
+4. Set the production environment variables below before deploying. Use separate Supabase credentials for any preview that needs working data access.
+5. Open the deployment and choose **Create an account**. Create a test note, upload a short recording, confirm transcription and audio playback, then try a rewrite and library export.
 
 | Required variable | Value |
 | --- | --- |
 | `SUPABASE_URL` | The Supabase project URL. |
 | `SUPABASE_SECRET_KEY` | The server-side Supabase secret key. The legacy service role key also works under `SUPABASE_SERVICE_ROLE_KEY`. |
 | `SUPABASE_PUBLISHABLE_KEY` | The project's publishable key (the legacy anon key also works under `SUPABASE_ANON_KEY`). It is used on the server only, to sign people in. |
-| `SIGNUP_CODE` | The invite code people enter to create an account, at least 16 characters. Generate one with `node -p "require('node:crypto').randomBytes(24).toString('base64url')"`. Sign-up stays closed on a public domain until it is set. |
 | `OPENAI_API_KEY` | An OpenAI API key from a project with API billing enabled. |
 
 Set `ALLOWED_HOSTS` to a comma-separated list of any custom domains that Vercel does not expose through its system variables. Enter host names without `https://` or paths. See [.env.example](.env.example) for optional model, API endpoint, upload, and ffmpeg settings.
 
 ### Accounts and privacy
 
-Everyone has their own account (email and password, at least 10 characters). Notes, recordings, tags, rewrite styles, dictionary, text replacements, integrations and settings belong to one account, and other accounts cannot see or change them. People create their own account with the invite code you share. Because every account uses your OpenAI key and your Supabase storage, share the code only with people you trust, and change `SIGNUP_CODE` when you want to stop new sign-ups.
+Everyone has their own account (email and password, at least 10 characters). Notes, recordings, tags, rewrite styles, dictionary, text replacements, integrations and settings belong to one account, and other accounts cannot see or change them. Anyone can create an account with an email and password. Because every account uses your OpenAI key and your Supabase storage, watch your usage and remove accounts you do not want.
 
 - **Sessions** are stored in `HttpOnly`, `SameSite=Lax` cookies that only the server reads, for up to 30 days. Logging out ends that device's session at once, and so does deleting the account. Every API request is checked with Supabase Auth, and all browser API mutations are restricted to the app's origin.
 - **Data access** goes through the server only. The database keeps row level security on with no policies, so the public key cannot read or write anything, and the server filters every query by the signed-in user.
 - **Removing someone:** delete the user in the Supabase dashboard (Authentication > Users). All their notes, tags and settings are deleted with them. Their audio files stay in the private `audio` bucket until you delete them there, so delete their notes in the app first if you want the audio gone too.
 - **Forgotten passwords** are reset in the Supabase dashboard (Authentication > Users). There is no email recovery.
-- Keep the OpenAI key, the Supabase secret key and the invite code in server-side environment variables.
+- Keep the OpenAI key and the Supabase secret key in server-side environment variables.
 
 ### Audio limits
 
@@ -54,7 +53,7 @@ npm ci
 Copy-Item .env.example .env.local
 ```
 
-Set the Supabase URL, secret key and publishable key in `.env.local`, using the local CLI's **Project URL**, **Secret** and **Publishable** values for a local stack. Set `OPENAI_API_KEY` to enable AI features. `npm run dev` opens the development server on [http://127.0.0.1:3000](http://127.0.0.1:3000). Use `npm run build` followed by `npm start` to run the production build locally. With `npm run dev` on this computer `SIGNUP_CODE` can be left blank: open the app and choose **Create an account**. A production build (`npm start`, Vercel) always needs it.
+Set the Supabase URL, secret key and publishable key in `.env.local`, using the local CLI's **Project URL**, **Secret** and **Publishable** values for a local stack. Set `OPENAI_API_KEY` to enable AI features. `npm run dev` opens the development server on [http://127.0.0.1:3000](http://127.0.0.1:3000). Use `npm run build` followed by `npm start` to run the production build locally. Open the app and choose **Create an account**.
 
 ## Verify before pushing
 
