@@ -47,14 +47,18 @@ export function pickMimeType(): string | undefined {
   return PREFERRED_TYPES.find((type) => MediaRecorder.isTypeSupported(type));
 }
 
+function loadDurationFix() {
+  return import("fix-webm-duration") as unknown as Promise<{
+    default: (blob: Blob, duration: number, options?: { logger?: false }) => Promise<Blob>;
+  }>;
+}
+
 async function withDuration(info: SegmentInfo): Promise<SegmentInfo> {
   if (!info.mimeType.includes("webm")) return info;
   try {
     // Browser WebM files have no duration header, which breaks seeking; add it.
-    const mod = (await import("fix-webm-duration")) as unknown as {
-      default: (blob: Blob, duration: number, options?: { logger?: false }) => Promise<Blob>;
-    };
-    return { ...info, blob: await mod.default(info.blob, info.durationMs, { logger: false }) };
+    const { default: fixDuration } = await loadDurationFix();
+    return { ...info, blob: await fixDuration(info.blob, info.durationMs, { logger: false }) };
   } catch {
     return info;
   }
@@ -84,6 +88,7 @@ export class SegmentedRecorder {
   start(): void {
     this.current = this.openSegment();
     this.state = "recording";
+    if (this.mimeType.includes("webm")) void loadDurationFix().catch(() => undefined);
   }
 
   get elapsedMs(): number {

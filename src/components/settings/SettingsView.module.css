@@ -1,0 +1,14 @@
+:global(html):has(.view) {
+  scrollbar-gutter: stable;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .panel {
+    animation: panel-in 200ms var(--ease-out-expo);
+  }
+}
+
+@keyframes panel-in {
+  from { opacity: 0.8; }
+  to { opacity: 1; }
+}

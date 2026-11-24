@@ -69,14 +69,15 @@ export function Popover({ open, onClose, trigger, children, panelClassName = "",
 interface DialogProps {
   open: boolean;
   onClose: () => void;
-  title: string;
+  title?: string;
   description?: string;
+  centeredHeader?: boolean;
   children: React.ReactNode;
   footer?: React.ReactNode;
-  size?: "sm" | "md" | "lg";
+  size?: "sm" | "md" | "lg" | "xl";
 }
 
-export function Dialog({ open, onClose, title, description, children, footer, size = "md" }: DialogProps) {
+export function Dialog({ open, onClose, title, description, centeredHeader = false, children, footer, size = "md" }: DialogProps) {
   const titleId = useId();
   const panelRef = useRef<HTMLDivElement>(null);
 
@@ -101,7 +102,15 @@ export function Dialog({ open, onClose, title, description, children, footer, si
     };
   }, [open, onClose]);
 
-  const width = size === "sm" ? "max-w-sm" : size === "lg" ? "max-w-2xl" : "max-w-md";
+  const width =
+    size === "sm"
+      ? "max-w-[26rem]"
+      : size === "lg"
+        ? "max-w-[33rem]"
+        : size === "xl"
+          ? "max-w-[47.25rem]"
+          : "max-w-[30rem]";
+
   return (
     <AnimatePresence>
       {open && (
@@ -117,34 +126,56 @@ export function Dialog({ open, onClose, title, description, children, footer, si
             ref={panelRef}
             role="dialog"
             aria-modal="true"
-            aria-labelledby={titleId}
+            aria-labelledby={title ? titleId : undefined}
             tabIndex={-1}
             onPointerDown={(event) => event.stopPropagation()}
             initial={{ opacity: 0, y: 20, scale: 0.97 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 12, scale: 0.97 }}
             transition={SPRING_SMOOTH}
-            className={`surface-card flex max-h-[92vh] w-full ${width} flex-col rounded-t-[1.75rem] shadow-2xl outline-none sm:rounded-[1.75rem]`}
+            className={`flex max-h-[92vh] w-full ${width} flex-col rounded-t-[2rem] border border-[var(--border)]/60 bg-[var(--surface-panel)] shadow-2xl outline-none sm:rounded-[2rem]`}
           >
-            <div className="flex items-start justify-between gap-3 px-6 pt-5">
-              <div className="min-w-0">
-                <h2 id={titleId} className="text-lg font-semibold tracking-tight">
-                  {title}
-                </h2>
-                {description && <p className="mt-0.5 text-sm text-[var(--ink-muted)]">{description}</p>}
+            {centeredHeader ? (
+              <div className="relative flex min-h-[3.75rem] items-center justify-center px-14 pt-4">
+                {title && (
+                  <h2 id={titleId} className="truncate text-[1rem] font-semibold tracking-tight text-[var(--ink)]">
+                    {title}
+                  </h2>
+                )}
+                <motion.button
+                  type="button"
+                  data-close
+                  whileTap={TAP_ICON}
+                  onClick={onClose}
+                  aria-label="Close"
+                  className="circle-close absolute right-4 top-4"
+                >
+                  <X className="h-4 w-4" />
+                </motion.button>
               </div>
-              <motion.button
-                type="button"
-                data-close
-                whileTap={TAP_ICON}
-                onClick={onClose}
-                aria-label="Close"
-                className="flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-full bg-[var(--surface-subtle)] text-[var(--ink-subtle)] transition-opacity hover:opacity-70"
-              >
-                <X className="h-4 w-4" />
-              </motion.button>
-            </div>
-            <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">{children}</div>
+            ) : (
+              <div className="flex items-start justify-between gap-3 px-6 pt-5">
+                <div className="min-w-0">
+                  {title && (
+                    <h2 id={titleId} className="text-lg font-semibold tracking-tight text-[var(--ink)]">
+                      {title}
+                    </h2>
+                  )}
+                  {description && <p className="mt-0.5 text-sm text-[var(--ink-muted)]">{description}</p>}
+                </div>
+                <motion.button
+                  type="button"
+                  data-close
+                  whileTap={TAP_ICON}
+                  onClick={onClose}
+                  aria-label="Close"
+                  className="circle-close"
+                >
+                  <X className="h-4 w-4" />
+                </motion.button>
+              </div>
+            )}
+            <div className="no-scrollbar min-h-0 flex-1 overflow-y-auto px-6 py-4">{children}</div>
             {footer && <div className="flex flex-wrap items-center justify-end gap-2 border-t border-[var(--border)] px-6 py-4">{footer}</div>}
           </motion.div>
         </motion.div>
@@ -217,7 +248,7 @@ export function Drawer({
             animate={{ x: 0 }}
             exit={{ x: "100%" }}
             transition={SPRING_SMOOTH}
-            className={`relative flex h-full ${widthClassName} flex-col overflow-y-auto bg-[var(--surface-panel)] shadow-2xl outline-none`}
+            className={`no-scrollbar relative flex h-full ${widthClassName} flex-col overflow-y-auto bg-[var(--surface-panel)] shadow-2xl outline-none`}
           >
             {headerContent !== undefined ? (
               headerContent
@@ -295,11 +326,16 @@ export function Switch({
         aria-checked={checked}
         disabled={disabled}
         onClick={() => onChange(!checked)}
-        className={`relative mt-0.5 flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full px-0.5 transition-colors duration-200 disabled:cursor-not-allowed ${
-          checked ? "justify-end bg-[var(--brand)]" : "justify-start bg-[var(--border)]"
+        className={`relative mt-0.5 flex h-[31px] w-[51px] shrink-0 cursor-pointer items-center rounded-full p-[2px] transition-colors duration-200 disabled:cursor-not-allowed ${
+          checked ? "justify-end bg-[var(--brand)]" : "justify-start bg-[#787880]/20 dark:bg-[#787880]/40"
         }`}
       >
-        <motion.span layout transition={SPRING_SNAPPY} className="inline-block h-5 w-5 rounded-full bg-white shadow-sm" />
+        <motion.span
+          layout
+          transition={SPRING_SNAPPY}
+          className="inline-block h-[27px] w-[27px] rounded-full bg-white"
+          style={{ boxShadow: "var(--shadow-switch-thumb)" }}
+        />
       </button>
     </div>
   );
@@ -329,14 +365,14 @@ export function TagDot({ color, className = "h-2 w-2" }: { color: string; classN
   return <span aria-hidden="true" className={`inline-block shrink-0 rounded-full ${className}`} style={{ backgroundColor: color }} />;
 }
 
-export function CuteMicIcon({ className = "h-10 w-10" }: { className?: string }) {
+export function CuteMicIcon({ className = "h-10 w-10", eyeFill = "var(--accent)" }: { className?: string; eyeFill?: string }) {
   return (
     <svg viewBox="0 0 48 48" fill="none" aria-hidden="true" className={className}>
       <g fill="currentColor">
         <path d="M24.3 46.8604C14.22 46.8604 6 38.6604 6 28.5604V24.8004C6 24.0204 6.64 23.4004 7.4 23.4004C8.16 23.4004 8.8 24.0404 8.8 24.8004V28.5604C8.8 37.1004 15.74 44.0404 24.28 44.0404C32.82 44.0404 39.76 37.1004 39.76 28.5604V24.8004C39.76 24.0204 40.4 23.4004 41.16 23.4004C41.92 23.4004 42.56 24.0404 42.56 24.8004V28.5604C42.6 38.6604 34.38 46.8604 24.3 46.8604Z" />
         <rect x="12.3008" y="5" width="24" height="36" rx="12" />
       </g>
-      <g fill="var(--accent)">
+      <g fill={eyeFill}>
         <path
           fillRule="evenodd"
           clipRule="evenodd"

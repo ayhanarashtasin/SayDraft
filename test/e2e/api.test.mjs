@@ -21,7 +21,11 @@ if (!fs.existsSync(path.join(ROOT, ".next", "BUILD_ID"))) {
 // ------------------------------------------------------------------ fake services
 
 const calls = { transcriptions: [], chats: [], webhooks: [], notion: [] };
-const mockState = { failTranscription: false, delayRewrite: false };
+const mockState = { failTranscription: false, delayRewrite: false, invalidSpeakerLabels: false, transcriptionBatch: null };
+const whisperSegments = [
+  { text: "Can you send the agenda?", start: 0, end: 1 },
+  { text: "I will send it today.", start: 1, end: 2 },
+];
 
 async function readBody(req) {
   const chunks = [];
@@ -48,10 +52,21 @@ async function openaiHandler(req, res) {
       prompt: form.get("prompt"),
       format: form.get("response_format"),
       chunking: form.get("chunking_strategy"),
+      timestamps: form.getAll("timestamp_granularities[]"),
       name: file.name,
       size: file.size,
     };
-    calls.transcriptions.push(call);
+    const callNumber = calls.transcriptions.push(call);
+    const batch = mockState.transcriptionBatch;
+    if (batch) {
+      batch.inFlight += 1;
+      if (batch.inFlight === 2) {
+        batch.overlapped = true;
+        batch.release.resolve();
+      }
+      await batch.release.promise;
+      batch.inFlight -= 1;
+    }
     if (mockState.failTranscription) {
       res.statusCode = 401;
       res.end(JSON.stringify({ error: { message: "Incorrect API key provided: sk-abcdef123456", code: "invalid_api_key" } }));
@@ -68,17 +83,22 @@ async function openaiHandler(req, res) {
       }));
       return;
     }
-    res.end(JSON.stringify({ text: `part ${calls.transcriptions.length} gonna work` }));
+    if (call.format === "verbose_json") {
+      res.end(JSON.stringify({ text: whisperSegments.map(({ text }) => text).join(" "), segments: whisperSegments }));
+      return;
+    }
+    res.end(JSON.stringify({ text: `part ${callNumber} gonna work` }));
     return;
   }
   if (req.url === "/chat/completions") {
     const body = JSON.parse(raw.toString("utf8"));
     const system = body.messages[0].content;
     const user = body.messages[1].content;
-    calls.chats.push({ model: body.model, stream: body.stream, system, user });
+    calls.chats.push({ model: body.model, stream: body.stream, format: body.response_format?.type, system, user });
     let reply = `Rewritten: ${user.slice(0, 40)}`;
     if (/short, specific title/.test(system)) reply = "Grocery Plan";
     else if (/Translate the user's note into Spanish/.test(system)) reply = "Hola mundo";
+    else if (/Infer speaker turns/.test(system)) reply = JSON.stringify({ speakers: mockState.invalidSpeakerLabels ? ["B"] : ["A", "B"] });
     if (!body.stream) {
       res.end(JSON.stringify({ choices: [{ message: { content: reply } }] }));
       return;
@@ -420,19 +440,35 @@ test("recorded segments are uploaded, repaired, transcribed with dictionary hint
   assert.equal((await uploadAudio(id, second, "recording-2.webm", "audio/webm;codecs=opus", 3)).status, 200);
 
   const before = calls.transcriptions.length;
-  const submissions = await Promise.all([1, 2].map(() => api(`/api/notes/${id}/transcribe`, { json: { mode: "pending", language: "en" } })));
-  const [started, busy] = submissions.sort((a, b) => a.status - b.status);
-  assert.equal(started.status, 202);
-  assert.equal(started.data.note.status, "processing");
-  assert.equal(busy.status, 409);
+  const batch = { inFlight: 0, overlapped: false, release: Promise.withResolvers() };
+  const deadline = setTimeout(batch.release.resolve, 8000);
+  mockState.transcriptionBatch = batch;
+  let note;
+  try {
+    const submissions = await Promise.all([1, 2].map(() => api(`/api/notes/${id}/transcribe`, { json: { mode: "pending", language: "en" } })));
+    const [started, busy] = submissions.sort((a, b) => a.status - b.status);
+    assert.equal(started.status, 202);
+    assert.equal(started.data.note.status, "processing");
+    assert.equal(busy.status, 409);
+    note = await waitForNote(id);
+  } finally {
+    clearTimeout(deadline);
+    batch.release.resolve();
+    mockState.transcriptionBatch = null;
+  }
 
-  const note = await waitForNote(id);
   assert.equal(note.status, "ready", note.error);
+  assert.ok(batch.overlapped, "recorded segments are sent to the provider concurrently");
   const mine = calls.transcriptions.slice(before);
   assert.equal(mine.length, 2);
   assert.ok(mine.every((call) => call.language === "en" && call.model === "gpt-4o-mini-transcribe" && call.format === "json"));
   assert.match(mine[0].prompt, /Kubernetes, Saydraft/);
-  assert.match(note.transcript, /^part \d+ going to work\n\npart \d+ going to work$/);
+  const inRecordingOrder = [first, second].map((clip) => {
+    const index = mine.findIndex((call) => call.size === clip.length);
+    assert.ok(index >= 0);
+    return `part ${before + index + 1} going to work`;
+  });
+  assert.equal(note.transcript, inRecordingOrder.join("\n\n"));
   assert.equal(note.title, "Grocery Plan");
   assert.equal(note.audioFiles.length, 2);
   assert.ok(note.audioFiles.every((file) => file.status === "ready" && file.durationSec > 1));
@@ -743,4 +779,136 @@ test("pages render and deleting a note removes its audio", async () => {
   const before = (await storage.list()).data.length;
   assert.equal((await api(`/api/notes/${recordingNote.id}`, { method: "DELETE" })).status, 200);
   assert.equal((await storage.list()).data.length, before - recordingNote.audioFiles.length);
+});
+
+test("quick voice fast path transcribes in one request, appends, and preserves audio on failure", async () => {
+  const clip = makeAudio(path.join(workDir, "quick.webm"), 2, ["-c:a", "libopus", "-b:a", "24k"]);
+
+  // Unauthenticated caller is rejected.
+  const unauthForm = new FormData();
+  unauthForm.set("file", new Blob([clip], { type: "audio/webm" }), "recording-1.webm");
+  assert.equal((await fetch(`${base}/api/notes/quick`, { method: "POST", body: unauthForm })).status, 401);
+
+  // Fast single-shot recording returns ready note immediately with transcript + audio.
+  const form = new FormData();
+  form.set("file", new Blob([clip], { type: "audio/webm" }), "recording-1.webm");
+  form.set("name", "recording-1.webm");
+  form.set("source", "recording");
+  form.set("language", "en");
+  form.set("durationSec", "2");
+  const createdRes = await appFetch(`${base}/api/notes/quick`, { method: "POST", body: form });
+  assert.equal(createdRes.status, 201, await createdRes.clone().text());
+  const created = await createdRes.json();
+  assert.equal(created.note.status, "ready");
+  assert.equal(created.titlePending, true);
+  assert.match(created.note.transcript, /going to work/);
+  assert.equal(created.note.audioFiles.length, 1);
+  assert.equal(created.note.audioFiles[0].status, "ready");
+  const quickId = created.note.id;
+
+  // Background after() upgrades the fallback title to the AI title and remuxes safely.
+  let upgraded = created.note;
+  for (let i = 0; i < 40 && upgraded.title !== "Grocery Plan"; i += 1) {
+    await new Promise((r) => setTimeout(r, 150));
+    upgraded = (await api(`/api/notes/${quickId}`)).data.note;
+  }
+  assert.equal(upgraded.title, "Grocery Plan");
+
+  // Audio streams cleanly from storage.
+  const streamRes = await appFetch(`${base}/api/notes/${quickId}/audio/${upgraded.audioFiles[0].id}`);
+  assert.equal(streamRes.status, 200);
+  assert.ok((await streamRes.arrayBuffer()).byteLength > 200);
+
+  // Append a second clip in one request; preserves existing title and appends transcript.
+  const appendForm = new FormData();
+  appendForm.set("file", new Blob([clip], { type: "audio/webm" }), "recording-2.webm");
+  appendForm.set("name", "recording-2.webm");
+  appendForm.set("source", "recording");
+  appendForm.set("language", "en");
+  appendForm.set("durationSec", "2");
+  appendForm.set("appendTo", String(quickId));
+  const appendedRes = await appFetch(`${base}/api/notes/quick`, { method: "POST", body: appendForm });
+  assert.equal(appendedRes.status, 200, await appendedRes.clone().text());
+  const appended = await appendedRes.json();
+  assert.equal(appended.note.status, "ready");
+  assert.equal(appended.note.title, "Grocery Plan");
+  assert.equal(appended.note.audioFiles.length, 2);
+  assert.equal(appended.note.transcript.split("going to work").length - 1, 2);
+
+  // Provider failure still saves the audio on a failed note so nothing is lost.
+  mockState.failTranscription = true;
+  const failForm = new FormData();
+  failForm.set("file", new Blob([clip], { type: "audio/webm" }), "fail.webm");
+  failForm.set("name", "fail.webm");
+  failForm.set("source", "recording");
+  failForm.set("durationSec", "2");
+  const failedRes = await appFetch(`${base}/api/notes/quick`, { method: "POST", body: failForm });
+  mockState.failTranscription = false;
+  assert.equal(failedRes.status, 201);
+  const failed = await failedRes.json();
+  assert.equal(failed.note.status, "failed");
+  assert.match(failed.transcribeError, /rejected the API key/);
+  assert.equal(failed.note.audioFiles.length, 1);
+
+  await api(`/api/notes/${quickId}`, { method: "DELETE" });
+  await api(`/api/notes/${failed.note.id}`, { method: "DELETE" });
+});
+
+test("Whisper speaker labeling works with a blank diarization model in both recording paths", async () => {
+  const settings = (await api("/api/settings")).data.settings;
+  const ids = [];
+  try {
+    const patch = { transcribeModel: "whisper-large-v3-turbo", diarizeModel: "", rewriteModel: "openai/gpt-oss-20b" };
+    assert.equal((await api("/api/settings", { method: "PATCH", json: patch })).status, 200);
+    assert.equal((await api("/api/status")).data.speakersAvailable, true);
+
+    const clip = makeAudio(path.join(workDir, "whisper-meeting.webm"), 2, ["-c:a", "libopus"]);
+    const beforeAudio = calls.transcriptions.length;
+    const beforeChat = calls.chats.length;
+    const quick = async () => {
+      const form = new FormData();
+      form.set("file", new Blob([clip], { type: "audio/webm" }), "meeting.webm");
+      for (const [name, value] of Object.entries({ source: "meeting", language: "en", speakers: "true", durationSec: "2" })) {
+        form.set(name, value);
+      }
+      const response = await api("/api/notes/quick", { body: form });
+      assert.equal(response.status, 201, JSON.stringify(response.data));
+      ids.push(response.data.note.id);
+      return response.data.note;
+    };
+
+    const transcript = "Speaker A: Can you send the agenda?\n\nSpeaker B: I will send it today.";
+    assert.equal((await quick()).transcript, transcript);
+
+    const created = await api("/api/notes", { json: { kind: "audio", source: "meeting", language: "en", speakers: true } });
+    assert.equal(created.status, 201);
+    const id = created.data.note.id;
+    ids.push(id);
+    await uploadAudio(id, clip, "meeting.webm", "audio/webm", 2);
+    assert.equal((await api(`/api/notes/${id}/transcribe`, { json: { mode: "pending" } })).status, 202);
+    assert.equal((await waitForNote(id)).transcript, transcript);
+
+    mockState.invalidSpeakerLabels = true;
+    const fallback = await quick();
+    assert.equal(fallback.status, "ready");
+    assert.equal(fallback.transcript, "Speaker ?: Can you send the agenda? I will send it today.");
+
+    const requests = calls.transcriptions.slice(beforeAudio);
+    assert.equal(requests.length, 3);
+    for (const request of requests) {
+      assert.equal(request.model, patch.transcribeModel);
+      assert.equal(request.language, "en");
+      assert.equal(request.format, "verbose_json");
+      assert.equal(request.chunking, null);
+      assert.deepEqual(request.timestamps, ["segment"]);
+    }
+    const labels = calls.chats.slice(beforeChat).filter((call) => call.format === "json_object");
+    assert.equal(labels.length, 3);
+    assert.equal(labels[0].model, patch.rewriteModel);
+    assert.deepEqual(JSON.parse(labels[0].user), whisperSegments);
+  } finally {
+    mockState.invalidSpeakerLabels = false;
+    await api("/api/settings", { method: "PATCH", json: settings });
+    for (const id of ids) await api(`/api/notes/${id}`, { method: "DELETE" });
+  }
 });

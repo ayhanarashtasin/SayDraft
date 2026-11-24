@@ -1,14 +1,15 @@
 import { DIRECT_TRANSCRIBE_MAX_BYTES, MAX_RECORDING_SEC, RECORDING_SEGMENT_SEC } from "../lib/limits.ts";
 import type { AppStatus } from "../lib/types.ts";
 import { hasFfmpeg } from "./audio.ts";
-import { aiConfig } from "./openai.ts";
+import { aiConfig, resolveSpeakerTranscription } from "./openai.ts";
 import { getSettings } from "./settings.ts";
 import { maxUploadBytes } from "./uploads.ts";
 
 export async function appStatus(userId: string): Promise<AppStatus> {
   const settings = await getSettings(userId);
+  const { configured } = aiConfig();
   return {
-    configured: aiConfig().configured,
+    configured,
     ffmpeg: hasFfmpeg(),
     plan: "pro_plus",
     limits: {
@@ -18,6 +19,6 @@ export async function appStatus(userId: string): Promise<AppStatus> {
       directTranscribeMaxBytes: DIRECT_TRANSCRIBE_MAX_BYTES,
     },
     settings,
-    speakersAvailable: Boolean(settings.diarizeModel),
+    speakersAvailable: configured && Boolean(resolveSpeakerTranscription(settings)),
   };
 }

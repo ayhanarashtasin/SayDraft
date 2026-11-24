@@ -5,40 +5,50 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
-  Archive,
-  ArchiveRestore,
-  ArrowLeft,
-  BookPlus,
   Check,
   ChevronDown,
-  Copy,
-  Download,
-  FileDown,
   Globe,
-  Hash,
   Languages,
-  Mic,
-  MoreVertical,
-  Play,
   Plus,
   RefreshCw,
-  Replace,
   Send,
   Sparkles,
   Tag as TagIcon,
   Trash2,
-  Upload,
   Users,
   Wand2,
   X,
 } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { ApiError, api, errorMessage, postStream } from "@/lib/api-client";
-import { countWords, formatDateTime, formatDuration, slugify } from "@/lib/format";
+import { formatNoteTimestamp, slugify } from "@/lib/format";
 import { findLanguage, languageLabel } from "@/lib/languages";
-import { EASE_OUT, SPRING_SMOOTH, SPRING_SNAPPY, TAP_ICON, TAP_PRESS } from "@/lib/motion";
+import { EASE_OUT, SIDE_PANEL_TRANSITION, SPRING_SMOOTH, SPRING_SNAPPY, TAP_ICON, TAP_PRESS } from "@/lib/motion";
 import type { IntegrationAction, Note, Prompt, Rewrite, Tag } from "@/lib/types";
-import { downloadBlob } from "../record/upload-flow";
+import {
+  ArchiveBoxSolidIcon,
+  BackArrowIcon,
+  BoltFilledIcon,
+  BookSolidIcon,
+  CheckCircleFilledIcon,
+  CopySquaresIcon,
+  DictionaryIllustration,
+  ExportAudioSolidIcon,
+  GlobeLangSolidIcon,
+  HashThickIcon,
+  MicSolidIcon,
+  MoreDotsVerticalIcon,
+  PaperclipClipIcon,
+  PlayTriangleIcon,
+  ScissorsSolidIcon,
+  SparklesFilledIcon,
+  SpeakersSolidIcon,
+  TranslateDualIcon,
+  TrashFilledIcon,
+  WriteNoteLinesIcon,
+} from "../icons";
+import { consumeReadyNote, downloadBlob } from "../record/upload-flow";
+import { GalleryModal } from "../settings/GallerySection";
 import { useAppStatus } from "../StatusProvider";
 import { TagModal } from "../TagManager";
 import { type ConfirmOptions, useConfirm } from "../ConfirmDialog";
@@ -47,8 +57,10 @@ import { Accordion, Dialog, Drawer, Popover, ProgressBar, Spinner, TagDot } from
 import { AudioPlayer } from "./AudioPlayer";
 import { LanguageDialog } from "./LanguageDialog";
 import { type RewriteSource, RewritePanel } from "./RewritePanel";
+import { TranslatePanel } from "./TranslatePanel";
 
 type Version = "original" | number;
+type SidePanel = "closed" | "rewrite" | "translate";
 type RewriteRequest = { promptId: number } | { instruction: string } | { translateTo: string };
 
 function versionText(note: Note, version: Version): string {
@@ -75,13 +87,14 @@ export function NoteView({ noteId }: { noteId: number }) {
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [streaming, setStreaming] = useState<Record<number, string>>({});
   const [busyKey, setBusyKey] = useState<string | null>(null);
-  const [panelOpen, setPanelOpen] = useState(false);
+  const [sidePanel, setSidePanel] = useState<SidePanel>("closed");
   const [isDesktop, setIsDesktop] = useState(false);
-  const [wideDesktop, setWideDesktop] = useState(false);
   const [playerOpen, setPlayerOpen] = useState(false);
+  const [playerAutoPlay, setPlayerAutoPlay] = useState(false);
   const [source, setSource] = useState<RewriteSource>("original");
-  const [menu, setMenu] = useState<"inlineTags" | "tags" | "more" | "send" | null>(null);
-  const [dialog, setDialog] = useState<"translate" | "language" | "dictionary" | null>(null);
+  const [menu, setMenu] = useState<"inlineTags" | "tags" | "source" | "more" | "send" | null>(null);
+  const [dialog, setDialog] = useState<"language" | "dictionary" | null>(null);
+  const [galleryOpen, setGalleryOpen] = useState(false);
   const [tagModalOpen, setTagModalOpen] = useState(false);
   const [dictionaryWord, setDictionaryWord] = useState("");
   const [copied, setCopied] = useState(false);
@@ -103,7 +116,6 @@ export function NoteView({ noteId }: { noteId: number }) {
   const applyServerNote = useCallback((next: Note) => {
     setNote(next);
     noteRef.current = next;
-    // While a save is in flight, a poll may return older text; keep what's on screen.
     const saving = savingCount.current > 0;
     if (!titleDirty.current && !saving) {
       setTitle(next.title);
@@ -138,37 +150,40 @@ export function NoteView({ noteId }: { noteId: number }) {
   const loadPrompts = useCallback(() => api<{ prompts: Prompt[] }>("/api/prompts").then((data) => setPrompts(data.prompts)).catch(() => undefined), []);
 
   useEffect(() => {
-    void load();
+    const stashed = consumeReadyNote(noteId);
+    const timers: Array<ReturnType<typeof setTimeout>> = [];
+    if (stashed) {
+      applyServerNote(stashed.note);
+      if (stashed.titlePending) {
+        timers.push(setTimeout(() => void load(), 1600));
+        timers.push(setTimeout(() => void load(), 4000));
+      }
+    } else {
+      void load();
+    }
     void loadTags();
     void loadPrompts();
     api<{ actions: IntegrationAction[] }>("/api/actions").then((data) => setActions(data.actions)).catch(() => undefined);
 
     const desktopMedia = window.matchMedia("(min-width: 1024px)");
-    const wideMedia = window.matchMedia("(min-width: 1140px)");
-    const syncLayout = () => {
-      setIsDesktop(desktopMedia.matches);
-      setWideDesktop(wideMedia.matches);
-    };
+    const syncLayout = () => setIsDesktop(desktopMedia.matches);
     syncLayout();
-    setPanelOpen(desktopMedia.matches);
+    setSidePanel(desktopMedia.matches ? "rewrite" : "closed");
     desktopMedia.addEventListener("change", syncLayout);
-    wideMedia.addEventListener("change", syncLayout);
     return () => {
+      timers.forEach(clearTimeout);
       desktopMedia.removeEventListener("change", syncLayout);
-      wideMedia.removeEventListener("change", syncLayout);
     };
-  }, [load, loadTags, loadPrompts]);
+  }, [applyServerNote, load, loadTags, loadPrompts, noteId]);
 
   const pollNeeded = Boolean(
     note && (note.status === "processing" || note.status === "uploading" || note.rewrites.some((rewrite) => rewrite.status === "processing" && !(rewrite.id in streaming))),
   );
   useEffect(() => {
     if (!pollNeeded) return;
-    const id = setInterval(() => void load(), 1500);
+    const id = setInterval(() => void load(), 650);
     return () => clearInterval(id);
   }, [pollNeeded, load]);
-
-  // ------------------------------------------------------------------ saving
 
   const flush = useCallback(async () => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
@@ -268,8 +283,6 @@ export function NoteView({ noteId }: { noteId: number }) {
     if (version === "original") setSource("original");
   }
 
-  // ------------------------------------------------------------------ AI actions
-
   const replaceRewrite = useCallback((rewrite: Rewrite) => {
     setNote((previous) => {
       if (!previous) return previous;
@@ -305,7 +318,7 @@ export function NoteView({ noteId }: { noteId: number }) {
           replaceRewrite(rewrite);
           switchTo(rewrite.id, { ...current, rewrites: [rewrite, ...current.rewrites] });
           if (!window.matchMedia("(min-width: 1024px)").matches) {
-            setPanelOpen(false);
+            setSidePanel("closed");
           }
         } else if (event.type === "delta" && createdId !== null && event.text) {
           const id = createdId;
@@ -383,8 +396,6 @@ export function NoteView({ noteId }: { noteId: number }) {
       toast(errorMessage(error), "error");
     }
   }
-
-  // ------------------------------------------------------------------ note actions
 
   async function patchNote(json: Record<string, unknown>, success?: string) {
     try {
@@ -479,8 +490,6 @@ export function NoteView({ noteId }: { noteId: number }) {
     }
   }
 
-  // ------------------------------------------------------------------ render
-
   const activeRewrite = useMemo(
     () => (note && active !== "original" ? note.rewrites.find((rewrite) => rewrite.id === active) ?? null : null),
     [note, active],
@@ -524,6 +533,7 @@ export function NoteView({ noteId }: { noteId: number }) {
   const visibleText = activeRewrite && rewriteRunning ? streaming[activeRewrite.id] ?? activeRewrite.text : text;
   const editorReadOnly = (active === "original" && (processing || note.status === "uploading")) || rewriteRunning;
   const aiReady = Boolean(status?.configured);
+  const canUseCurrent = Boolean(activeRewrite && activeRewrite.status === "ready");
   const rewriteDisabledReason = !aiReady
     ? "AI rewrites aren't connected right now."
     : !note.transcript.trim()
@@ -533,7 +543,7 @@ export function NoteView({ noteId }: { noteId: number }) {
       : busyKey
         ? "Finish the current rewrite first."
         : undefined;
-  const columnShift = isDesktop && wideDesktop && panelOpen ? -195 : 0;
+  const panelOpen = sidePanel !== "closed";
 
   const tagMenuContent = (
     <>
@@ -554,7 +564,7 @@ export function NoteView({ noteId }: { noteId: number }) {
             >
               <TagDot color={tag.color} className="h-2.5 w-2.5" />
               <span className="flex-1 truncate">{tag.title}</span>
-              {on && <Check className="!text-[var(--brand)]" />}
+              {on && <CheckCircleFilledIcon className="h-4 w-4 !text-[var(--brand)]" />}
             </button>
           );
         })}
@@ -573,26 +583,39 @@ export function NoteView({ noteId }: { noteId: number }) {
     </>
   );
 
-  const sidebarContent = (
-    <RewritePanel
-      prompts={prompts}
-      busyKey={busyKey}
-      disabled={Boolean(rewriteDisabledReason)}
-      disabledReason={rewriteDisabledReason}
-      source={source}
-      canUseCurrent={Boolean(activeRewrite && activeRewrite.status === "ready")}
-      currentLabel={activeRewrite?.label ?? ""}
-      onSourceChange={setSource}
-      onRun={(request) => void runRewrite(request, "promptId" in request ? `prompt:${request.promptId}` : "instruction")}
-      onToggleFavorite={(prompt) => void toggleFavorite(prompt)}
-      onClose={() => setPanelOpen(false)}
-    />
-  );
+  const sidebarContent =
+    sidePanel === "translate" ? (
+      <TranslatePanel
+        busy={busyKey === "translate"}
+        disabled={Boolean(rewriteDisabledReason)}
+        disabledReason={rewriteDisabledReason}
+        onSelect={(code) => {
+          void runRewrite({ translateTo: code }, "translate", activeRewrite && activeRewrite.status === "ready" ? activeRewrite.id : null);
+          if (!isDesktop) setSidePanel("closed");
+        }}
+        onClose={() => setSidePanel("closed")}
+      />
+    ) : (
+      <RewritePanel
+        prompts={prompts}
+        busyKey={busyKey}
+        disabled={Boolean(rewriteDisabledReason)}
+        disabledReason={rewriteDisabledReason}
+        source={source}
+        canUseCurrent={canUseCurrent}
+        currentLabel={activeRewrite?.label ?? ""}
+        onSourceChange={setSource}
+        onRun={(request) => void runRewrite(request, "promptId" in request ? `prompt:${request.promptId}` : "instruction")}
+        onToggleFavorite={(prompt) => void toggleFavorite(prompt)}
+        onOpenGallery={() => setGalleryOpen(true)}
+        onClose={() => setSidePanel("closed")}
+      />
+    );
 
   return (
     <div className="flex min-h-screen w-full overflow-x-clip bg-[var(--canvas)]">
       <main className="flex min-w-0 flex-1 flex-col items-center">
-        <div className="sticky top-0 z-20 flex min-h-[3.875rem] w-full items-center justify-between border-b border-[var(--border)]/70 bg-[var(--canvas)]/88 px-4 backdrop-blur-md">
+        <div className="sticky top-0 z-20 flex min-h-[3.875rem] w-full items-center justify-between border-b border-[var(--border)]/70 bg-[var(--canvas)]/88 px-5 backdrop-blur-md">
           <div className="flex items-center gap-3">
             <Link
               href="/"
@@ -600,18 +623,18 @@ export function NoteView({ noteId }: { noteId: number }) {
                 void flush();
               }}
               aria-label="Back to notes"
-              className="icon-btn text-[var(--ink-subtle)]"
+              className="flex h-9 w-9 items-center justify-center rounded-full text-[var(--ink)] transition-opacity hover:opacity-65"
             >
-              <ArrowLeft className="h-5 w-5" />
+              <BackArrowIcon className="h-5 w-5" />
             </Link>
             <div className="flex min-h-5 items-center text-xs text-[var(--ink-muted)]" aria-live="polite">
               <AnimatePresence mode="wait" initial={false}>
                 {saveState === "saving" && (
                   <motion.span
                     key="saving"
-                    initial={{ opacity: 0, y: 3 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -3 }}
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
                     transition={{ duration: 0.15, ease: EASE_OUT }}
                     className="inline-flex items-center gap-1.5"
                   >
@@ -619,68 +642,59 @@ export function NoteView({ noteId }: { noteId: number }) {
                   </motion.span>
                 )}
                 {saveState === "saved" && (
-                  <motion.span
-                    key="saved"
-                    initial={{ opacity: 0, y: 3 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -3 }}
-                    transition={{ duration: 0.15, ease: EASE_OUT }}
-                    className="inline-flex items-center gap-1.5"
-                  >
+                  <span key="saved" className="saved-fade inline-flex items-center gap-1 text-[var(--ink-muted)]">
                     <Check className="h-3.5 w-3.5 text-[var(--success)]" /> Saved
-                  </motion.span>
+                  </span>
                 )}
                 {saveState === "error" && (
-                  <motion.button
-                    key="error"
-                    type="button"
-                    initial={{ opacity: 0, y: 3 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -3 }}
-                    transition={{ duration: 0.15, ease: EASE_OUT }}
-                    className="cursor-pointer text-[var(--danger)] underline"
-                    onClick={() => void flush()}
-                  >
+                  <button type="button" className="cursor-pointer text-[var(--danger)] underline" onClick={() => void flush()}>
                     Not saved · Retry
-                  </motion.button>
+                  </button>
                 )}
               </AnimatePresence>
             </div>
           </div>
-
-          <motion.span
-            animate={{ x: isDesktop && panelOpen ? -390 : 0 }}
-            transition={SPRING_SMOOTH}
-            className="hidden text-xs text-[var(--ink-muted)] sm:inline"
-          >
-            {countWords(visibleText).toLocaleString()} words · {visibleText.length.toLocaleString()} chars
-          </motion.span>
+          <span className="w-9" />
         </div>
 
         <motion.div
           initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0, x: columnShift }}
+          animate={{ opacity: 1, y: 0 }}
           transition={SPRING_SMOOTH}
-          className="flex w-full max-w-[44rem] flex-1 flex-col px-5 pb-8 pt-8 sm:px-10 sm:pt-12"
+          className="flex w-full max-w-[40.75rem] flex-1 flex-col px-5 pb-8 pt-7 sm:px-6 sm:pt-10"
         >
-          <div className="flex flex-wrap items-center gap-2 text-[0.9375rem]/5 font-semibold text-[var(--ink-muted)]">
-            {hasAudio && (
+          {hasAudio && (
+            <Accordion open={playerOpen}>
+              <div className="pb-4">
+                <AudioPlayer
+                  noteId={note.id}
+                  files={note.audioFiles}
+                  autoPlay={playerAutoPlay}
+                  onClose={() => {
+                    setPlayerOpen(false);
+                    setPlayerAutoPlay(false);
+                  }}
+                />
+              </div>
+            </Accordion>
+          )}
+
+          <div className="flex flex-wrap items-center gap-2.5 text-[0.9375rem]/5 font-semibold text-[var(--ink-muted)]">
+            {hasAudio && !playerOpen && (
               <motion.button
                 type="button"
                 whileTap={TAP_PRESS}
-                onClick={() => setPlayerOpen((open) => !open)}
-                aria-expanded={playerOpen}
-                aria-label={playerOpen ? "Hide audio player" : "Play note audio"}
-                className="inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--surface-panel)] px-2.5 py-1 text-xs font-semibold text-[var(--ink)] transition-opacity hover:opacity-70"
+                onClick={() => {
+                  setPlayerAutoPlay(true);
+                  setPlayerOpen(true);
+                }}
+                aria-label="Play note audio"
+                className="inline-flex h-[1.875rem] w-[2.375rem] cursor-pointer items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface-panel)] text-[var(--ink)] transition-opacity hover:opacity-75"
               >
-                <Play className="h-3.5 w-3.5 fill-current" />
-                {note.durationSec ? formatDuration(note.durationSec) : "Audio"}
-                <motion.span animate={{ rotate: playerOpen ? 180 : 0 }} transition={SPRING_SNAPPY} className="inline-flex">
-                  <ChevronDown className="h-3.5 w-3.5" />
-                </motion.span>
+                <PlayTriangleIcon className="ml-0.5 h-3.5 w-3.5" />
               </motion.button>
             )}
-            <time dateTime={new Date(note.createdAt).toISOString()}>{formatDateTime(note.createdAt)}</time>
+            <time dateTime={new Date(note.createdAt).toISOString()}>{formatNoteTimestamp(note.createdAt)}</time>
             {hasAudio && note.language && note.language !== "auto" && (
               <span className="text-xs font-medium text-[var(--ink-muted)]">· {languageLabel(note.language)}</span>
             )}
@@ -690,19 +704,11 @@ export function NoteView({ noteId }: { noteId: number }) {
               </span>
             )}
             {note.archived && (
-              <span className="rounded-full bg-[var(--surface-subtle)] px-2.5 py-0.5 text-xs font-medium text-[var(--ink-subtle)]">
+              <span className="rounded-full bg-[var(--surface-panel)] px-2.5 py-0.5 text-xs font-medium text-[var(--ink-subtle)]">
                 Archived
               </span>
             )}
           </div>
-
-          {hasAudio && (
-            <Accordion open={playerOpen}>
-              <div className="pt-3">
-                <AudioPlayer noteId={note.id} files={note.audioFiles} />
-              </div>
-            </Accordion>
-          )}
 
           <input
             value={title}
@@ -716,10 +722,10 @@ export function NoteView({ noteId }: { noteId: number }) {
             placeholder={processing ? "Title appears after transcription…" : "Untitled note"}
             aria-label="Note title"
             maxLength={200}
-            className="mt-5 w-full bg-transparent text-[1.75rem]/[2.125rem] font-semibold tracking-tight text-[var(--ink)] outline-none placeholder:text-[var(--ink-muted)]/50"
+            className="mt-4 w-full bg-transparent text-[1.75rem]/[2.125rem] font-bold tracking-[-0.02em] text-[var(--ink)] outline-none placeholder:text-[var(--ink-muted)]/50"
           />
 
-          <div className="mt-3.5 flex flex-wrap items-center gap-1.5">
+          <div className="mt-3 flex flex-wrap items-center gap-1.5">
             {note.tags.map((tag) => (
               <span
                 key={tag.id}
@@ -748,7 +754,7 @@ export function NoteView({ noteId }: { noteId: number }) {
                   aria-label="Add tags"
                   aria-expanded={menu === "inlineTags"}
                   onClick={() => setMenu(menu === "inlineTags" ? null : "inlineTags")}
-                  className="inline-flex cursor-pointer items-center gap-1 rounded-lg border border-dashed border-[var(--border-subtle)] px-2.5 py-1.5 text-[0.875rem]/[1.2] text-[var(--ink-subtle)] transition-colors hover:border-[var(--ink-muted)] hover:text-[var(--ink)]"
+                  className="inline-flex cursor-pointer items-center gap-1 rounded-lg border border-dashed border-[var(--border-strong)]/60 px-2.5 py-1 text-[0.8125rem]/[1.2] font-medium text-[var(--ink-muted)] transition-colors hover:border-[var(--ink-muted)] hover:text-[var(--ink)]"
                 >
                   <Plus className="h-3.5 w-3.5" /> Tags
                 </button>
@@ -796,7 +802,7 @@ export function NoteView({ noteId }: { noteId: number }) {
                 onClick={() => switchTo("original")}
                 className={`relative inline-flex shrink-0 cursor-pointer items-center rounded-full border px-3.5 py-1.5 text-xs font-medium transition-colors duration-150 ${
                   active === "original"
-                    ? "border-transparent text-[var(--accent-ink)]"
+                    ? "border-transparent text-[var(--cta-ink)]"
                     : "border-[var(--border)] bg-[var(--surface)] text-[var(--ink-subtle)] hover:text-[var(--ink)]"
                 }`}
               >
@@ -805,7 +811,7 @@ export function NoteView({ noteId }: { noteId: number }) {
                     layoutId="note-version-pill"
                     transition={SPRING_SNAPPY}
                     aria-hidden="true"
-                    className="absolute inset-0 rounded-full bg-[var(--accent)]"
+                    className="absolute inset-0 rounded-full bg-[var(--cta-bg)]"
                   />
                 )}
                 <span className="relative z-10">Original</span>
@@ -818,7 +824,7 @@ export function NoteView({ noteId }: { noteId: number }) {
                     key={rewrite.id}
                     className={`relative inline-flex shrink-0 items-center gap-1 rounded-full border py-1.5 pl-3 pr-1.5 text-xs font-medium transition-colors duration-150 ${
                       selected
-                        ? "border-transparent text-[var(--accent-ink)]"
+                        ? "border-transparent text-[var(--cta-ink)]"
                         : "border-[var(--border)] bg-[var(--surface)] text-[var(--ink-subtle)] hover:text-[var(--ink)]"
                     }`}
                   >
@@ -827,7 +833,7 @@ export function NoteView({ noteId }: { noteId: number }) {
                         layoutId="note-version-pill"
                         transition={SPRING_SNAPPY}
                         aria-hidden="true"
-                        className="absolute inset-0 rounded-full bg-[var(--accent)]"
+                        className="absolute inset-0 rounded-full bg-[var(--cta-bg)]"
                       />
                     )}
                     <button
@@ -891,18 +897,14 @@ export function NoteView({ noteId }: { noteId: number }) {
                   onBlur={() => void flush()}
                   aria-label={active === "original" ? "Transcript" : `${activeRewrite?.label ?? "Rewrite"} text`}
                   placeholder={processing ? "Your transcript will appear here…" : rewriteRunning ? "Writing…" : "Start typing…"}
-                  className="prose-note mt-5 min-h-[44vh] w-full flex-1 resize-none bg-transparent pb-[16vh] text-[1.0625rem]/[1.65] text-[var(--ink)] outline-none [field-sizing:content] placeholder:text-[var(--ink-muted)]/55"
+                  className="prose-note mt-5 min-h-[44vh] w-full flex-1 resize-none bg-transparent pb-[16vh] text-[1.0625rem]/[1.65] text-[var(--ink-body)] outline-none [field-sizing:content] placeholder:text-[var(--ink-muted)]/55"
                 />
               </>
             )}
           </motion.div>
         </motion.div>
 
-        <motion.div
-          animate={{ x: columnShift }}
-          transition={SPRING_SMOOTH}
-          className="sticky bottom-4 z-20 mb-4 flex items-center gap-2 rounded-[1.5rem] bg-[var(--canvas)]/65 px-3 py-2.5 backdrop-blur-lg"
-        >
+        <div className="sticky bottom-4 z-20 mb-4 flex items-center gap-2.5 rounded-[1.25rem] bg-[var(--canvas)]/65 px-3 py-2.5 backdrop-blur-lg">
           <motion.button
             type="button"
             whileTap={!visibleText.trim() ? undefined : TAP_ICON}
@@ -910,7 +912,7 @@ export function NoteView({ noteId }: { noteId: number }) {
             disabled={!visibleText.trim()}
             aria-label="Copy text"
             title="Copy"
-            className="flex h-12 w-12 cursor-pointer items-center justify-center rounded-full border border-[var(--border-subtle)] bg-[var(--surface)] text-[var(--ink)] transition-opacity duration-150 hover:opacity-75 disabled:cursor-not-allowed disabled:opacity-30"
+            className="flex h-12 w-12 cursor-pointer items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface)] text-[var(--ink)] transition-opacity duration-150 hover:opacity-75 disabled:cursor-not-allowed disabled:opacity-30"
           >
             <AnimatePresence mode="wait" initial={false}>
               {copied ? (
@@ -933,7 +935,7 @@ export function NoteView({ noteId }: { noteId: number }) {
                   transition={{ duration: 0.14, ease: EASE_OUT }}
                   className="inline-flex"
                 >
-                  <Copy className="h-5 w-5" />
+                  <CopySquaresIcon className="h-5 w-5" />
                 </motion.span>
               )}
             </AnimatePresence>
@@ -951,25 +953,65 @@ export function NoteView({ noteId }: { noteId: number }) {
                 title="Tags"
                 aria-expanded={menu === "tags"}
                 onClick={() => setMenu(menu === "tags" ? null : "tags")}
-                className="flex h-12 w-12 cursor-pointer items-center justify-center rounded-full border border-[var(--border-subtle)] bg-[var(--surface)] text-[var(--ink)] transition-opacity duration-150 hover:opacity-75"
+                className="flex h-12 w-12 cursor-pointer items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface)] text-[var(--ink)] transition-opacity duration-150 hover:opacity-75"
               >
-                <Hash className="h-5 w-5" />
+                <HashThickIcon className="h-5 w-5" />
               </motion.button>
             }
           >
             {tagMenuContent}
           </Popover>
 
-          <motion.button
-            type="button"
-            whileTap={TAP_PRESS}
-            aria-pressed={panelOpen}
-            onClick={() => setPanelOpen((open) => !open)}
-            className="inline-flex h-12 cursor-pointer items-center gap-2 rounded-2xl bg-[var(--accent)] px-5 text-[0.9375rem] font-semibold text-[var(--accent-ink)] transition-opacity duration-150 hover:opacity-80"
+          <Popover
+            open={menu === "source"}
+            onClose={() => setMenu(null)}
+            panelClassName="bottom-14 left-1/2 -translate-x-1/2 w-56"
+            trigger={
+              <div className="inline-flex h-12 items-center overflow-hidden rounded-2xl bg-[var(--cta-bg)] text-[var(--cta-ink)]">
+                <button
+                  type="button"
+                  onClick={() => setSidePanel((cur) => (cur === "rewrite" ? "closed" : "rewrite"))}
+                  className="inline-flex h-full cursor-pointer items-center gap-2 pl-5 pr-2.5 text-[0.9375rem] font-semibold transition-opacity hover:opacity-80"
+                >
+                  <SparklesFilledIcon className="h-[1.125rem] w-[1.125rem]" />
+                  <span>Rewrite</span>
+                </button>
+                <button
+                  type="button"
+                  aria-label="Select rewrite source"
+                  aria-expanded={menu === "source"}
+                  onClick={() => setMenu(menu === "source" ? null : "source")}
+                  className="flex h-full cursor-pointer items-center pr-4 pl-1.5 transition-opacity hover:opacity-70"
+                >
+                  <ChevronDown className="h-4 w-4" />
+                </button>
+              </div>
+            }
           >
-            <Sparkles className="h-4 w-4" />
-            <span>Rewrite</span>
-          </motion.button>
+            <button
+              type="button"
+              className="menu-item justify-between"
+              onClick={() => {
+                setSource("original");
+                setMenu(null);
+              }}
+            >
+              <span>Original text</span>
+              {source === "original" && <CheckCircleFilledIcon className="h-4 w-4 !text-[var(--ink)]" />}
+            </button>
+            <button
+              type="button"
+              disabled={!canUseCurrent}
+              className="menu-item justify-between"
+              onClick={() => {
+                setSource("current");
+                setMenu(null);
+              }}
+            >
+              <span>Current version</span>
+              {source === "current" && <CheckCircleFilledIcon className="h-4 w-4 !text-[var(--ink)]" />}
+            </button>
+          </Popover>
 
           <motion.button
             type="button"
@@ -977,16 +1019,21 @@ export function NoteView({ noteId }: { noteId: number }) {
             disabled={Boolean(rewriteDisabledReason) || !visibleText.trim()}
             title={rewriteDisabledReason ?? "Translate"}
             aria-label="Translate"
-            onClick={() => setDialog("translate")}
-            className="flex h-12 w-12 cursor-pointer items-center justify-center rounded-full border border-[var(--border-subtle)] bg-[var(--surface)] text-[var(--ink)] transition-opacity duration-150 hover:opacity-75 disabled:cursor-not-allowed disabled:opacity-30"
+            aria-pressed={sidePanel === "translate"}
+            onClick={() => setSidePanel((cur) => (cur === "translate" ? "closed" : "translate"))}
+            className={`flex h-12 w-12 cursor-pointer items-center justify-center rounded-full border transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-30 ${
+              sidePanel === "translate"
+                ? "border-[var(--brand)] bg-[var(--brand-soft)] text-[var(--brand)]"
+                : "border-[var(--border)] bg-[var(--surface)] text-[var(--ink)] hover:opacity-75"
+            }`}
           >
-            {busyKey === "translate" ? <Spinner className="h-5 w-5" /> : <Languages className="h-5 w-5" />}
+            {busyKey === "translate" ? <Spinner className="h-5 w-5" /> : <TranslateDualIcon className="h-5 w-5" />}
           </motion.button>
 
           <Popover
             open={menu === "more"}
             onClose={() => setMenu(null)}
-            panelClassName="bottom-14 right-0 w-72 max-h-[70vh] overflow-y-auto"
+            panelClassName="bottom-14 right-0 w-[19rem] max-h-[70vh] overflow-y-auto"
             trigger={
               <motion.button
                 type="button"
@@ -995,9 +1042,9 @@ export function NoteView({ noteId }: { noteId: number }) {
                 title="More actions"
                 aria-expanded={menu === "more"}
                 onClick={() => setMenu(menu === "more" ? null : "more")}
-                className="flex h-12 w-12 cursor-pointer items-center justify-center rounded-full border border-[var(--border-subtle)] bg-[var(--surface)] text-[var(--ink)] transition-opacity duration-150 hover:opacity-75"
+                className="flex h-12 w-12 cursor-pointer items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface)] text-[var(--ink)] transition-opacity duration-150 hover:opacity-75"
               >
-                <MoreVertical className="h-5 w-5" />
+                <MoreDotsVerticalIcon className="h-5 w-5" />
               </motion.button>
             }
           >
@@ -1012,47 +1059,35 @@ export function NoteView({ noteId }: { noteId: number }) {
                 setDialog("dictionary");
               }}
             >
-              <BookPlus /> Add to dictionary
+              <BookSolidIcon className="h-5 w-5 !text-[var(--ink)]" /> Add to Dictionary
             </button>
             <button type="button" className="menu-item" disabled={processing} onClick={() => router.push(`/record?append=${note.id}`)}>
-              <Mic /> Record more
+              <MicSolidIcon className="h-5 w-5 !text-[var(--ink)]" /> Record more
             </button>
             <button type="button" className="menu-item" disabled={processing} onClick={() => router.push(`/record/upload?append=${note.id}`)}>
-              <Upload /> Add audio file
+              <PaperclipClipIcon className="h-5 w-5 !text-[var(--ink)]" /> Add audio file
             </button>
             {hasAudio && (
               <a className="menu-item" href={`/api/notes/${note.id}/audio-export`} download onClick={() => setMenu(null)}>
-                <Download /> Export audio
+                <ExportAudioSolidIcon className="h-5 w-5 !text-[var(--ink)]" /> Export audio
               </a>
             )}
-            <button
-              type="button"
-              className="menu-item"
-              onClick={() => {
-                setMenu(null);
-                const label = activeRewrite ? ` (${activeRewrite.label})` : "";
-                downloadBlob(
-                  new Blob([`${title || "Untitled note"}${label}\n\n${textRef.current}\n`], { type: "text/plain;charset=utf-8" }),
-                  `${slugify(title || "note")}${activeRewrite ? `-${slugify(activeRewrite.label)}` : ""}.txt`,
-                );
-              }}
-            >
-              <FileDown /> Download as text
-            </button>
             {hasAudio && (
               <>
-                <div className="menu-divider" />
                 <button
                   type="button"
-                  className="menu-item"
+                  className="menu-item whitespace-nowrap"
                   disabled={processing || !aiReady}
                   onClick={() => {
                     setMenu(null);
                     setDialog("language");
                   }}
                 >
-                  <Languages /> Speaker&apos;s language
-                  <span className="ml-auto text-xs text-[var(--ink-muted)]">{languageLabel(note.language ?? status?.settings.defaultLanguage)}</span>
+                  <GlobeLangSolidIcon className="h-5 w-5 !text-[var(--ink)]" />
+                  <span className="whitespace-nowrap">Speaker&apos;s language</span>
+                  <span className="ml-auto shrink-0 whitespace-nowrap text-xs text-[var(--ink-muted)]">
+                    {languageLabel(note.language ?? status?.settings.defaultLanguage)}
+                  </span>
                 </button>
                 {status?.speakersAvailable && (
                   <button
@@ -1079,19 +1114,31 @@ export function NoteView({ noteId }: { noteId: number }) {
                       );
                     }}
                   >
-                    <Users /> {note.speakers ? "Remove speaker labels" : "Separate speakers"}
+                    <SpeakersSolidIcon className="h-5 w-5 !text-[var(--ink)]" /> {note.speakers ? "Remove speaker labels" : "Separate speakers"}
                   </button>
                 )}
               </>
             )}
-            <div className="menu-divider" />
-            <button type="button" className="menu-item" onClick={() => void applyReplacementsNow()} disabled={editorReadOnly}>
-              <Replace /> Apply text replacements
-            </button>
             <button type="button" className="menu-item" onClick={() => setMenu("send")}>
-              <Send /> Send to…
+              <BoltFilledIcon className="h-5 w-5 !text-[var(--ink)]" /> Actions
             </button>
-            <div className="menu-divider" />
+            <button type="button" className="menu-item" onClick={() => void applyReplacementsNow()} disabled={editorReadOnly}>
+              <ScissorsSolidIcon className="h-5 w-5 !text-[var(--ink)]" /> Text replacements
+            </button>
+            <button
+              type="button"
+              className="menu-item"
+              onClick={() => {
+                setMenu(null);
+                const label = activeRewrite ? ` (${activeRewrite.label})` : "";
+                downloadBlob(
+                  new Blob([`${title || "Untitled note"}${label}\n\n${textRef.current}\n`], { type: "text/plain;charset=utf-8" }),
+                  `${slugify(title || "note")}${activeRewrite ? `-${slugify(activeRewrite.label)}` : ""}.txt`,
+                );
+              }}
+            >
+              <WriteNoteLinesIcon className="h-5 w-5 !text-[var(--ink)]" /> Download as text
+            </button>
             <button
               type="button"
               className="menu-item"
@@ -1100,10 +1147,10 @@ export function NoteView({ noteId }: { noteId: number }) {
                 void patchNote({ archived: !note.archived }, note.archived ? "Note restored from archive" : "Note archived");
               }}
             >
-              {note.archived ? <ArchiveRestore /> : <Archive />} {note.archived ? "Restore" : "Archive"}
+              <ArchiveBoxSolidIcon className="h-5 w-5 !text-[var(--ink)]" /> {note.archived ? "Restore" : "Archive"}
             </button>
             <button type="button" className="menu-item !text-[var(--danger)]" onClick={() => void deleteNote()}>
-              <Trash2 className="!text-[var(--danger)]" /> Delete note
+              <TrashFilledIcon className="h-5 w-5 !text-[var(--danger)]" /> Delete this note
             </button>
           </Popover>
 
@@ -1120,38 +1167,33 @@ export function NoteView({ noteId }: { noteId: number }) {
               Connect apps
             </Link>
           </Popover>
-        </motion.div>
+        </div>
       </main>
 
-      <AnimatePresence>
+      <AnimatePresence initial={false}>
         {isDesktop && panelOpen && (
-          <motion.div
-            key="desktop-rewrite-sidebar"
-            initial={{ x: "100%" }}
-            animate={{ x: 0 }}
-            exit={{ x: "100%" }}
-            transition={SPRING_SMOOTH}
-            className="fixed bottom-0 right-0 top-0 z-30 w-[24.375rem] border-l border-[var(--border)] bg-[var(--surface-panel)] shadow-xl"
+          <motion.aside
+            key="desktop-side-panel"
+            initial={{ opacity: 0, width: 0 }}
+            animate={{ opacity: 1, width: "24.375rem" }}
+            exit={{ opacity: 0, width: 0 }}
+            transition={SIDE_PANEL_TRANSITION}
+            className="sticky top-0 z-30 h-screen shrink-0 overflow-hidden border-l border-[var(--border)] bg-[var(--surface-panel)]"
           >
-            {sidebarContent}
-          </motion.div>
+            <div className="h-full w-[24.375rem]">{sidebarContent}</div>
+          </motion.aside>
         )}
       </AnimatePresence>
 
-      <Drawer open={!isDesktop && panelOpen} onClose={() => setPanelOpen(false)} headerContent={null} ariaLabel="Rewrite options">
+      <Drawer
+        open={!isDesktop && panelOpen}
+        onClose={() => setSidePanel("closed")}
+        headerContent={null}
+        ariaLabel={sidePanel === "translate" ? "Translate to" : "Rewrite options"}
+      >
         {sidebarContent}
       </Drawer>
 
-      <LanguageDialog
-        open={dialog === "translate"}
-        title="Translate to"
-        description={activeRewrite ? `Translates "${activeRewrite.label}".` : "Translates your note."}
-        onClose={() => setDialog(null)}
-        onPick={(code) => {
-          setDialog(null);
-          void runRewrite({ translateTo: code }, "translate", activeRewrite && activeRewrite.status === "ready" ? activeRewrite.id : null);
-        }}
-      />
       <LanguageDialog
         open={dialog === "language"}
         title="Speaker's language"
@@ -1174,36 +1216,30 @@ export function NoteView({ noteId }: { noteId: number }) {
           );
         }}
       />
-      <Dialog
-        open={dialog === "dictionary"}
-        onClose={() => setDialog(null)}
-        title="Add to dictionary"
-        description="Names and special terms you save here are spelled right in future transcripts."
-        size="sm"
-        footer={
-          <>
-            <button type="button" className="btn btn-ghost" onClick={() => setDialog(null)}>
-              Cancel
-            </button>
-            <button type="button" className="btn btn-primary" disabled={!dictionaryWord.trim()} onClick={() => void addToDictionary()}>
-              Add word
-            </button>
-          </>
-        }
-      >
-        <input
-          value={dictionaryWord}
-          onChange={(event) => setDictionaryWord(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") void addToDictionary();
-          }}
-          maxLength={60}
-          placeholder="e.g. Dr. Rahman, espresso, Saydraft"
-          aria-label="Word or phrase"
-          className="field"
-        />
-        <p className="mt-2 text-xs text-[var(--ink-muted)]">Tip: highlight any word in your note before opening this to fill it in automatically.</p>
+
+      <Dialog open={dialog === "dictionary"} onClose={() => setDialog(null)} title="Add to dictionary" centeredHeader size="sm">
+        <div className="space-y-4">
+          <div className="flex flex-col items-center text-center">
+            <DictionaryIllustration className="h-12 w-12" />
+            <p className="mt-2 text-xs text-[var(--ink-muted)]">Names and special terms saved here are spelled right in future transcripts.</p>
+          </div>
+          <input
+            value={dictionaryWord}
+            onChange={(event) => setDictionaryWord(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") void addToDictionary();
+            }}
+            maxLength={60}
+            placeholder="e.g. Dr. Rahman, Saydraft"
+            aria-label="Word or phrase"
+            className="field rounded-full bg-[var(--surface-input)]"
+          />
+          <button type="button" className="btn btn-purple h-11 w-full rounded-2xl" disabled={!dictionaryWord.trim()} onClick={() => void addToDictionary()}>
+            Add word
+          </button>
+        </div>
       </Dialog>
+
       <TagModal
         open={tagModalOpen}
         tags={tags}
@@ -1213,6 +1249,8 @@ export function NoteView({ noteId }: { noteId: number }) {
           void load();
         }}
       />
+
+      <GalleryModal open={galleryOpen} onClose={() => setGalleryOpen(false)} onInstalled={() => void loadPrompts()} />
     </div>
   );
 }

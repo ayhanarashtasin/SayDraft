@@ -47,11 +47,13 @@ export function AuthForm({ mode, next }: AuthFormProps) {
     <main className="flex min-h-screen w-full items-center justify-center bg-[var(--canvas)] px-5 py-10">
       <div className="w-full max-w-[26rem]">
         <div className="mb-6 flex flex-col items-center text-center">
-          <CuteMicIcon className="h-12 w-12" />
-          <p className="mt-2 text-lg font-bold tracking-tight text-[var(--ink)]">Saydraft</p>
+          <span className="flex h-16 w-16 items-center justify-center rounded-full bg-[var(--cta-bg)] text-[var(--cta-ink)] shadow-md">
+            <CuteMicIcon className="h-10 w-10" />
+          </span>
+          <p className="mt-3 text-xl font-bold tracking-tight text-[var(--ink)]">Saydraft</p>
         </div>
 
-        <form onSubmit={submit} noValidate={false} className="surface-card rounded-3xl p-6 sm:p-8">
+        <form onSubmit={submit} noValidate={false} className="rounded-[2rem] border border-[var(--border)] bg-[var(--surface-panel)] p-6 shadow-xl sm:p-8">
           <h1 className="text-2xl font-bold tracking-tight text-[var(--ink)]">{signup ? "Create your account" : "Log in"}</h1>
           <p className="mt-1 text-sm text-[var(--ink-muted)]">
             {signup ? "Your notes, recordings and settings stay private to your account." : "Welcome back. Log in to see your notes."}

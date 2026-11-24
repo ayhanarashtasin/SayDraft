@@ -1,12 +1,13 @@
 "use client";
 
 import { useState } from "react";
-import { ArrowDown, ArrowUp, Check, Pencil, Plus, Trash2, X } from "lucide-react";
+import { ArrowDown, ArrowUp, Check, Pencil, Trash2, X } from "lucide-react";
 import { api, errorMessage } from "@/lib/api-client";
 import type { Tag } from "@/lib/types";
-import { Dialog, TagDot } from "./ui";
 import { useConfirm } from "./ConfirmDialog";
+import { TagsIllustration } from "./icons";
 import { useToast } from "./Toast";
+import { Dialog, TagDot } from "./ui";
 
 export const TAG_COLORS = ["#E11D48", "#EA580C", "#D97706", "#059669", "#0284C7", "#4F46E5", "#7C3AED", "#C026D3", "#0D9488", "#475569"];
 
@@ -22,7 +23,7 @@ function ColorPicker({ value, onChange, size = "h-6 w-6" }: { value: string; onC
           aria-label={`Color ${color}`}
           onClick={() => onChange(color)}
           className={`${size} cursor-pointer rounded-full transition-transform ${
-            value.toUpperCase() === color ? "scale-110 ring-2 ring-[var(--ink)] ring-offset-2 ring-offset-[var(--surface)]" : ""
+            value.toUpperCase() === color ? "scale-110 ring-2 ring-[var(--ink)] ring-offset-2 ring-offset-[var(--surface-panel)]" : ""
           }`}
           style={{ backgroundColor: color }}
         />
@@ -31,10 +32,11 @@ function ColorPicker({ value, onChange, size = "h-6 w-6" }: { value: string; onC
   );
 }
 
-/** Create, rename, recolor, reorder and delete tags. */
-export function TagManager({ tags, onChanged }: { tags: Tag[]; onChanged: () => void }) {
+/** Create, rename, recolor, reorder and delete tags matching Letterly's 05-notes-edit-tags.png. */
+export function TagManager({ tags, onChanged, compact = false }: { tags: Tag[]; onChanged: () => void; compact?: boolean }) {
   const toast = useToast();
   const askConfirm = useConfirm();
+  const [creating, setCreating] = useState(false);
   const [title, setTitle] = useState("");
   const [color, setColor] = useState(TAG_COLORS[tags.length % TAG_COLORS.length]);
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -60,10 +62,11 @@ export function TagManager({ tags, onChanged }: { tags: Tag[]; onChanged: () => 
   async function create(event: React.FormEvent) {
     event.preventDefault();
     if (!title.trim()) return;
-    const ok = await run(() => api("/api/tags", { json: { title: title.trim(), color } }));
+    const ok = await run(() => api("/api/tags", { json: { title: title.trim(), color } }), "Tag created");
     if (ok) {
       setTitle("");
       setColor(TAG_COLORS[(tags.length + 1) % TAG_COLORS.length]);
+      setCreating(false);
     }
   }
 
@@ -76,31 +79,22 @@ export function TagManager({ tags, onChanged }: { tags: Tag[]; onChanged: () => 
   }
 
   return (
-    <div>
-      <form onSubmit={create} className="space-y-3">
-        <div className="flex gap-2">
-          <input
-            value={title}
-            onChange={(event) => setTitle(event.target.value)}
-            maxLength={40}
-            placeholder="New tag name"
-            aria-label="New tag name"
-            className="field"
-          />
-          <button type="submit" disabled={!title.trim() || busy} className="btn btn-primary shrink-0">
-            <Plus className="h-4 w-4" /> Add
-          </button>
+    <div className="space-y-4">
+      {!compact && (
+        <div className="flex justify-center pb-1">
+          <TagsIllustration className="h-14 w-14" />
         </div>
-        <ColorPicker value={color} onChange={setColor} />
-      </form>
+      )}
 
-      <ul className="mt-5 space-y-2">
-        {tags.length === 0 && <li className="py-6 text-center text-sm text-[var(--ink-muted)]">No tags yet. Tags help you filter and organize notes.</li>}
+      <div className="overflow-hidden rounded-2xl bg-[var(--surface-panel-card)] px-4 py-1.5">
+        <div className="py-2.5 text-[0.9375rem] font-medium text-[var(--ink)]">All</div>
+        <div className="py-2.5 text-[0.9375rem] font-medium text-[var(--ink)]">Unsorted</div>
+
         {tags.map((tag, index) => (
-          <li key={tag.id} className="rounded-2xl border border-[var(--border)] bg-[var(--surface-subtle)] px-3 py-2.5">
+          <div key={tag.id} className="py-2">
             {editingId === tag.id ? (
               <form
-                className="space-y-2"
+                className="space-y-2.5 py-1"
                 onSubmit={async (event) => {
                   event.preventDefault();
                   const ok = await run(() => api(`/api/tags/${tag.id}`, { method: "PATCH", json: { title: editTitle, color: editColor } }));
@@ -119,25 +113,25 @@ export function TagManager({ tags, onChanged }: { tags: Tag[]; onChanged: () => 
                 <ColorPicker value={editColor} onChange={setEditColor} size="h-5 w-5" />
               </form>
             ) : (
-              <div className="flex items-center gap-2">
-                <TagDot color={tag.color} className="h-3 w-3" />
-                <span className="min-w-0 flex-1 truncate text-sm font-medium">{tag.title}</span>
+              <div className="flex items-center gap-2.5">
+                <TagDot color={tag.color} className="h-2.5 w-2.5" />
+                <span className="min-w-0 flex-1 truncate text-[0.9375rem] font-medium text-[var(--ink)]">{tag.title}</span>
                 {typeof tag.noteCount === "number" && <span className="text-xs text-[var(--ink-muted)]">{tag.noteCount}</span>}
-                <button type="button" className="icon-btn h-8 w-8" aria-label={`Move ${tag.title} up`} disabled={busy || index === 0} onClick={() => move(index, -1)}>
+                <button type="button" className="icon-btn h-7 w-7" aria-label={`Move ${tag.title} up`} disabled={busy || index === 0} onClick={() => void move(index, -1)}>
                   <ArrowUp className="h-3.5 w-3.5" />
                 </button>
                 <button
                   type="button"
-                  className="icon-btn h-8 w-8"
+                  className="icon-btn h-7 w-7"
                   aria-label={`Move ${tag.title} down`}
                   disabled={busy || index === tags.length - 1}
-                  onClick={() => move(index, 1)}
+                  onClick={() => void move(index, 1)}
                 >
                   <ArrowDown className="h-3.5 w-3.5" />
                 </button>
                 <button
                   type="button"
-                  className="icon-btn h-8 w-8"
+                  className="icon-btn h-7 w-7"
                   aria-label={`Edit ${tag.title}`}
                   onClick={() => {
                     setEditingId(tag.id);
@@ -149,7 +143,7 @@ export function TagManager({ tags, onChanged }: { tags: Tag[]; onChanged: () => 
                 </button>
                 <button
                   type="button"
-                  className="icon-btn h-8 w-8 hover:!text-[var(--danger)]"
+                  className="icon-btn h-7 w-7 hover:!text-[var(--danger)]"
                   aria-label={`Delete ${tag.title}`}
                   disabled={busy}
                   onClick={async () => {
@@ -168,16 +162,45 @@ export function TagManager({ tags, onChanged }: { tags: Tag[]; onChanged: () => 
                 </button>
               </div>
             )}
-          </li>
+          </div>
         ))}
-      </ul>
+
+        <div className="py-2.5 text-[0.9375rem] font-medium text-[var(--ink)]">Archive</div>
+      </div>
+
+      {creating ? (
+        <form onSubmit={create} className="space-y-3 rounded-2xl bg-[var(--surface-panel-card)] p-4">
+          <div className="flex gap-2">
+            <input
+              value={title}
+              onChange={(event) => setTitle(event.target.value)}
+              maxLength={40}
+              placeholder="Tag name"
+              aria-label="New tag name"
+              autoFocus
+              className="field rounded-full bg-[var(--surface-input)]"
+            />
+            <button type="submit" disabled={!title.trim() || busy} className="btn btn-purple shrink-0">
+              Add
+            </button>
+            <button type="button" onClick={() => setCreating(false)} aria-label="Cancel" className="icon-btn h-10 w-10">
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+          <ColorPicker value={color} onChange={setColor} />
+        </form>
+      ) : (
+        <button type="button" onClick={() => setCreating(true)} className="btn btn-purple h-12 w-full rounded-2xl text-[0.9375rem]">
+          New tag
+        </button>
+      )}
     </div>
   );
 }
 
 export function TagModal({ open, tags, onClose, onChanged }: { open: boolean; tags: Tag[]; onClose: () => void; onChanged: () => void }) {
   return (
-    <Dialog open={open} onClose={onClose} title="Edit tags" description="Tags appear as filters on your notes list.">
+    <Dialog open={open} onClose={onClose} title="Tags" centeredHeader size="md">
       <TagManager tags={tags} onChanged={onChanged} />
     </Dialog>
   );

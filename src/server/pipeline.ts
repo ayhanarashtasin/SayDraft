@@ -2,13 +2,13 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { FatalError } from "workflow";
-import { DIRECT_AUDIO_EXTENSIONS, DIRECT_TRANSCRIBE_MAX_BYTES } from "../lib/limits.ts";
+import { DIRECT_AUDIO_EXTENSIONS, DIRECT_TRANSCRIBE_MAX_BYTES, DIRECT_TRANSCRIBE_MAX_SEC } from "../lib/limits.ts";
 import { applyReplacements, cleanTitle, fallbackTitle, joinTranscriptParts } from "../lib/text.ts";
 import { AudioToolError, convertToM4a, extractAudioPiece, hasFfmpeg, probeAudio, remuxAudio } from "./audio.ts";
 import { HttpError, badRequest, notFound } from "./http.ts";
 import { triggerAutomaticActions } from "./integrations.ts";
 import { type NoteRow, getAudioRow, getNoteRow, getNoteRowForJob, listAudioRows, recoverExpiredWork } from "./notes.ts";
-import { aiConfig, chat, transcribe } from "./openai.ts";
+import { type TranscribeResult, aiConfig, chat, resolveSpeakerTranscription, transcribe } from "./openai.ts";
 import { prepareRewrite } from "./rewrite.ts";
 import { getSettings } from "./settings.ts";
 import { assertOk, assertWorkspaceWrite, createAudioSignedUrl, deleteAudioObject, downloadAudioToFile, supabase, tempDir, uploadAudioObject } from "./supabase.ts";
@@ -40,6 +40,7 @@ export interface TranscriptionPlan {
   speakers: boolean;
   ffmpeg: boolean;
   model: string;
+  speakerLabelModel?: string;
   language?: string;
   prompt?: string;
   autoRewritePromptId: number | null;
@@ -60,7 +61,7 @@ export async function claimTranscription(userId: string, noteId: number, options
   const note = await getNoteRow(userId, noteId);
   if (!note) throw notFound("Note not found.");
   const speakers = options.speakers ?? Boolean(note.speakers);
-  if (speakers && !(await getSettings(userId)).diarizeModel) {
+  if (speakers && !resolveSpeakerTranscription(await getSettings(userId))) {
     throw badRequest("Speaker separation is turned off. Choose a speaker separation model in Settings → Preferences.");
   }
   const now = Date.now();
@@ -105,14 +106,17 @@ export async function loadTranscriptionPlan(job: TranscriptionJob): Promise<Tran
   const fileIds = files.filter((file) => job.mode === "all" || file.status !== "ready").map((file) => Number(file.id));
   if (!fileIds.length) throw new FatalError("There is no audio to transcribe.");
   const language = note.language || settings.defaultLanguage;
+  const speakerTranscription = note.speakers ? resolveSpeakerTranscription(settings) : null;
+  if (note.speakers && !speakerTranscription) throw new FatalError("Speaker separation is turned off. Choose a speaker separation model in Settings → Preferences.");
   return {
     fileIds,
     speakers: note.speakers,
     isRecording: note.source === "recording" || note.source === "meeting",
     ffmpeg: hasFfmpeg(),
-    model: note.speakers ? settings.diarizeModel : settings.transcribeModel,
+    model: speakerTranscription?.model ?? settings.transcribeModel,
+    speakerLabelModel: speakerTranscription?.speakerLabelModel,
     language: language === "auto" ? undefined : language,
-    prompt: !note.speakers && settings.useDictionary ? await dictionaryPrompt(note.user_id) : undefined,
+    prompt: settings.useDictionary && (!note.speakers || speakerTranscription?.speakerLabelModel) ? await dictionaryPrompt(note.user_id) : undefined,
     autoRewritePromptId: !note.transcript.trim() ? settings.autoRewritePromptId : null,
   };
 }
@@ -123,11 +127,17 @@ async function signedAudio(name: string): Promise<string> {
   return url;
 }
 
+export interface PreparedAudioResult {
+  file: PreparedAudio;
+  transcript?: TranscribeResult;
+}
+
 export async function prepareAudio(
-  job: TranscriptionJob, plan: TranscriptionPlan, index: number,
-): Promise<PreparedAudio> {
+  job: TranscriptionJob, plan: TranscriptionPlan, index: number, reportProgress = true,
+): Promise<PreparedAudioResult> {
   "use step";
-  const note = await renewJob(job, plan.fileIds.length > 1 ? `Preparing audio (${index + 1} of ${plan.fileIds.length})` : "Preparing audio", 0);
+  const stage = reportProgress && plan.fileIds.length > 1 ? `Preparing audio (${index + 1} of ${plan.fileIds.length})` : undefined;
+  const note = await renewJob(job, stage);
   const id = plan.fileIds[index];
   const row = await getAudioRow(note.user_id, job.noteId, id);
   if (!row) throw new FatalError("An audio file was removed before transcription.");
@@ -137,9 +147,9 @@ export async function prepareAudio(
     if (!DIRECT_AUDIO_EXTENSIONS.has(extension) || original.size > DIRECT_TRANSCRIBE_MAX_BYTES) {
       throw new FatalError("This audio requires ffmpeg to convert or split it.");
     }
-    return original;
+    return { file: original };
   }
-  if (row.prepared && original.duration !== null) return original;
+  if (row.prepared && original.duration !== null) return { file: original };
 
   const signal = AbortSignal.timeout(STEP_TIMEOUT_MS);
   const workDir = fs.mkdtempSync(path.join(tempDir(), "prepare-"));
@@ -156,6 +166,32 @@ export async function prepareAudio(
     const repair = plan.isRecording && ["webm", "ogg", "m4a", "mp4"].includes(extension);
     const outputName = `${job.jobId}-${id}.${repair ? extension : "m4a"}`;
     const output = path.join(workDir, outputName);
+
+    // For short direct-format browser recordings already on disk, transcribe in parallel with remux+probe
+    // to avoid waiting on ffmpeg and eliminate the second Storage download in transcribeAudioPiece.
+    const canOverlapDirect =
+      repair &&
+      original.size <= DIRECT_TRANSCRIBE_MAX_BYTES &&
+      DIRECT_AUDIO_EXTENSIONS.has(extension) &&
+      original.duration !== null &&
+      original.duration <= DIRECT_TRANSCRIBE_MAX_SEC;
+
+    const overlappedTranscript = canOverlapDirect
+      ? transcribe({
+          filePath: input,
+          fileName: `audio.${extension}`,
+          mime: original.mime,
+          model: plan.model,
+          language: plan.language,
+          prompt: plan.prompt,
+          diarize: plan.speakers,
+          speakerLabelModel: plan.speakerLabelModel,
+          signal,
+        })
+      : null;
+    // Prevent unhandled rejection if remux/probe throws before we await overlappedTranscript.
+    overlappedTranscript?.catch(() => undefined);
+
     let media = input;
     if (!row.prepared) {
       if (repair) {
@@ -181,7 +217,36 @@ export async function prepareAudio(
       size: converted ? fs.statSync(output).size : original.size,
       duration: probe.durationSec,
     };
-    if (converted) await uploadAudioObject(outputName, await fs.openAsBlob(output, { type: prepared.mime }), prepared.mime);
+
+    const canDirectFromDisk =
+      !overlappedTranscript &&
+      prepared.size <= DIRECT_TRANSCRIBE_MAX_BYTES &&
+      prepared.duration <= DIRECT_TRANSCRIBE_MAX_SEC &&
+      !/^https?:\/\//i.test(media);
+
+    const directTranscriptPromise =
+      overlappedTranscript ??
+      (canDirectFromDisk
+        ? transcribe({
+            filePath: media,
+            fileName: `audio${path.extname(prepared.fileName)}`,
+            mime: prepared.mime,
+            model: plan.model,
+            language: plan.language,
+            prompt: plan.prompt,
+            diarize: plan.speakers,
+            speakerLabelModel: plan.speakerLabelModel,
+            signal,
+          })
+        : null);
+    directTranscriptPromise?.catch(() => undefined);
+
+    // Run Storage upload and direct transcription concurrently when both apply.
+    const [, transcript] = await Promise.all([
+      converted ? uploadAudioObject(outputName, await fs.openAsBlob(output, { type: prepared.mime }), prepared.mime) : Promise.resolve(),
+      directTranscriptPromise ?? Promise.resolve(undefined),
+    ]);
+
     const updated = assertOk(await supabase().rpc("store_prepared_audio", {
       p_note_id: job.noteId, p_job_id: job.jobId, p_file_id: id, p_old_name: row.file_name,
       p_new_name: prepared.fileName, p_mime: prepared.mime, p_duration: prepared.duration, p_size: prepared.size,
@@ -191,9 +256,14 @@ export async function prepareAudio(
       throw new FatalError("This transcription is no longer active.");
     }
     if (converted) await deleteAudioObject(row.file_name);
-    return prepared;
+    // Only reuse the overlapped transcript if the probed duration actually stayed under the direct limit.
+    const validTranscript =
+      transcript && prepared.size <= DIRECT_TRANSCRIBE_MAX_BYTES && prepared.duration <= DIRECT_TRANSCRIBE_MAX_SEC
+        ? transcript
+        : undefined;
+    return { file: prepared, transcript: validTranscript };
   } catch (error) {
-    if (error instanceof AudioToolError) throw new FatalError(error.message);
+    if (error instanceof HttpError || error instanceof AudioToolError) throw new FatalError(error.message);
     throw error;
   } finally {
     fs.rmSync(workDir, { recursive: true, force: true });
@@ -223,7 +293,7 @@ export async function transcribeAudioPiece(job: TranscriptionJob, plan: Transcri
     }
     return await transcribe({
       filePath: local, fileName: name, mime: split ? "audio/mpeg" : file.mime,
-      model: plan.model, language: plan.language, prompt: plan.prompt, diarize: plan.speakers, signal,
+      model: plan.model, language: plan.language, prompt: plan.prompt, diarize: plan.speakers, speakerLabelModel: plan.speakerLabelModel, signal,
     });
   } catch (error) {
     if (error instanceof HttpError || error instanceof AudioToolError) throw new FatalError(error.message);
@@ -233,10 +303,11 @@ export async function transcribeAudioPiece(job: TranscriptionJob, plan: Transcri
   }
 }
 
-async function generateTitle(text: string, model: string): Promise<string> {
+export async function generateTitle(text: string, model: string): Promise<string> {
+  const titleModel = process.env.OPENAI_TITLE_MODEL?.trim() || model;
   try {
     const raw = await chat({
-      model,
+      model: titleModel,
       system: "Write a short, specific title (2 to 7 words) for this note, in the same language as the note. Reply with the title only, without quotes or a trailing period.",
       user: text.slice(0, 6000),
       signal: AbortSignal.timeout(20_000),

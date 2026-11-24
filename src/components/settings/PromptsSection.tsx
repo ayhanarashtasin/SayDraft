@@ -7,6 +7,7 @@ import { api, errorMessage } from "@/lib/api-client";
 import { PROMPT_CATEGORIES } from "@/lib/templates";
 import type { Prompt } from "@/lib/types";
 import { useConfirm } from "../ConfirmDialog";
+import { PromptIcon } from "../icons";
 import { useToast } from "../Toast";
 import { SectionHeader } from "./SectionLayout";
 
@@ -98,6 +99,7 @@ export function PromptsSection() {
                   >
                     <Star className={`h-4 w-4 ${prompt.isFavorite ? "fill-current" : ""}`} />
                   </button>
+                  <PromptIcon builtinKey={prompt.builtinKey} templateId={prompt.templateId} category={prompt.category} className="h-5 w-5 shrink-0" />
                   <Link href={`/settings/edit-prompt/${prompt.id}`} className="min-w-0 flex-1 px-1">
                     <span className="block truncate text-sm font-semibold text-[var(--ink)]">{prompt.title}</span>
                     <span className="block truncate text-xs text-[var(--ink-muted)]">{prompt.description || prompt.body}</span>

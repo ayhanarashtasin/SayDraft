@@ -12,6 +12,58 @@ export function formatDateHeading(timestamp: number, now = new Date()): string {
   return date.toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" });
 }
 
+export interface DateGroupHeading {
+  key: string;
+  primary: string;
+  secondary?: string;
+  isToday: boolean;
+}
+
+/** Feed date buckets matching Letterly: Today, Month D | Yesterday | Previous 7 days | Previous 30 days | Month. */
+export function formatDateGroup(timestamp: number, now = new Date()): DateGroupHeading {
+  const date = new Date(timestamp);
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const day = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+  const diffDays = Math.round((today - day) / 86_400_000);
+  const monthDay = date.toLocaleDateString(undefined, { month: "long", day: "numeric" });
+  if (diffDays === 0) return { key: "today", primary: "Today,", secondary: monthDay, isToday: true };
+  if (diffDays === 1) return { key: "yesterday", primary: "Yesterday", secondary: monthDay, isToday: false };
+  if (diffDays >= 2 && diffDays <= 7) return { key: "prev7", primary: "Previous 7 days", isToday: false };
+  if (diffDays >= 8 && diffDays <= 30) return { key: "prev30", primary: "Previous 30 days", isToday: false };
+  if (date.getFullYear() === now.getFullYear()) {
+    return {
+      key: `ym-${date.getFullYear()}-${date.getMonth()}`,
+      primary: date.toLocaleDateString(undefined, { month: "long" }),
+      isToday: false,
+    };
+  }
+  return {
+    key: `ym-${date.getFullYear()}-${date.getMonth()}`,
+    primary: date.toLocaleDateString(undefined, { month: "long", year: "numeric" }),
+    isToday: false,
+  };
+}
+
+/** e.g. "Nov 22, 07:26 PM" */
+export function formatNoteTimestamp(timestamp: number): string {
+  return new Date(timestamp).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+/** Zero-padded countdown like "89:32" or "1:29:32". */
+export function formatCountdown(remainingSeconds: number): string {
+  const total = Math.max(0, Math.floor(remainingSeconds));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  if (hours > 0) return `${hours}:${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+  return `${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+}
+
 export function formatTime(timestamp: number): string {
   return new Date(timestamp).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 }

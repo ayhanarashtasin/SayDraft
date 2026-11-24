@@ -8,6 +8,8 @@ export const RECORDING_BITRATE = 48_000;
 
 /** Files at or below this size (and short enough) go to the transcription API unchanged. */
 export const DIRECT_TRANSCRIBE_MAX_BYTES = 24 * 1024 * 1024;
+/** Single-request fast path cap (stays safely under Vercel's 4.5 MB request body limit; ~11 min at 48 kbps). */
+export const QUICK_AUDIO_MAX_BYTES = 4 * 1024 * 1024;
 /** Longest audio sent in a single transcription request (the API caps this per request). */
 export const DIRECT_TRANSCRIBE_MAX_SEC = 20 * 60;
 /** Chunk length when audio has to be split for transcription. */

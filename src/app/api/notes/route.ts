@@ -3,6 +3,7 @@ import { NOTE_TEXT_MAX, TITLE_MAX } from "@/lib/limits";
 import type { NoteFilter, NoteSource, SortMode } from "@/lib/types";
 import { badRequest, idList, json, optionalBoolean, optionalString, readJson } from "@/server/http";
 import { createNote, listNotes } from "@/server/notes";
+import { resolveSpeakerTranscription } from "@/server/openai";
 import { titleForText } from "@/server/pipeline";
 import { route } from "@/server/route";
 import { getSettings } from "@/server/settings";
@@ -38,7 +39,7 @@ export const POST = route(async (request, _params, user) => {
     const language = body.language === undefined || body.language === null ? null : String(body.language);
     if (language !== null && language !== "auto" && !isLanguageCode(language)) throw badRequest("Unknown language.");
     const speakers = optionalBoolean(body.speakers, "speakers") ?? false;
-    if (speakers && !(await getSettings(user.id)).diarizeModel) {
+    if (speakers && !resolveSpeakerTranscription(await getSettings(user.id))) {
       throw badRequest("Speaker separation is turned off. Choose a speaker separation model in Settings → Preferences.");
     }
     const note = await createNote(user.id, { source, status: "uploading", language, speakers, tagIds });

@@ -6,10 +6,56 @@ import { motion } from "motion/react";
 import { api, errorMessage } from "@/lib/api-client";
 import { SPRING_SNAPPY } from "@/lib/motion";
 import type { DictionaryEntry, Replacement, Tag } from "@/lib/types";
+import { DictionaryIllustration, PlusThinIcon, ScissorsIllustration } from "../icons";
 import { TagManager } from "../TagManager";
 import { useToast } from "../Toast";
 import { Accordion, Switch } from "../ui";
 import { SectionCard, SectionHeader } from "./SectionLayout";
+
+function useVocabularyList<T>(path: string, key: string) {
+  const toast = useToast();
+  const [items, setItems] = useState<T[] | null>(null);
+  const [failed, setFailed] = useState(false);
+  const load = useCallback(async (signal?: AbortSignal) => {
+    setFailed(false);
+    try {
+      const data = await api<Record<string, T[]>>(path, { signal });
+      setItems(data[key]);
+    } catch (error) {
+      if (signal?.aborted) return;
+      setFailed(true);
+      toast(errorMessage(error), "error");
+    }
+  }, [key, path, toast]);
+  useEffect(() => {
+    const controller = new AbortController();
+    void load(controller.signal);
+    return () => controller.abort();
+  }, [load]);
+  return { items, failed, load };
+}
+
+function VocabularyPlaceholder({
+  failed,
+  label,
+  onRetry,
+  children,
+}: {
+  failed: boolean;
+  label: string;
+  onRetry: () => void;
+  children: React.ReactNode;
+}) {
+  if (failed) {
+    return <button type="button" className="btn btn-secondary btn-sm" onClick={onRetry}>Retry loading {label}</button>;
+  }
+  return (
+    <>
+      <p role="status" className="sr-only">Loading {label}…</p>
+      <div aria-hidden="true" className="flex gap-2 motion-safe:animate-pulse">{children}</div>
+    </>
+  );
+}
 
 function useRunner(reload: () => Promise<void>) {
   const toast = useToast();
@@ -34,26 +80,85 @@ function useRunner(reload: () => Promise<void>) {
   return { busy, run };
 }
 
-export function DictionarySection() {
+export function DictionarySection({ embedded = false }: { embedded?: boolean }) {
   const toast = useToast();
-  const [entries, setEntries] = useState<DictionaryEntry[] | null>(null);
+  const { items: entries, failed, load } = useVocabularyList<DictionaryEntry>("/api/dictionary", "entries");
   const [word, setWord] = useState("");
   const [bulk, setBulk] = useState("");
   const [bulkOpen, setBulkOpen] = useState(false);
   const [editing, setEditing] = useState<number | null>(null);
   const [editWord, setEditWord] = useState("");
 
-  const load = useCallback(async () => {
-    try {
-      setEntries((await api<{ entries: DictionaryEntry[] }>("/api/dictionary")).entries);
-    } catch (error) {
-      toast(errorMessage(error), "error");
-    }
-  }, [toast]);
-  useEffect(() => {
-    void load();
-  }, [load]);
   const { busy, run } = useRunner(load);
+
+  if (embedded) {
+    return (
+      <div className="space-y-5">
+        <div className="flex flex-col items-center text-center">
+          <DictionaryIllustration className="h-14 w-14" />
+          <h3 className="mt-2.5 text-lg font-bold text-[var(--ink)]">Dictionary</h3>
+          <p className="mt-1 max-w-xs text-xs text-[var(--ink-subtle)]">
+            Add specific words or names to ensure accuracy.
+          </p>
+        </div>
+
+        <form
+          className="flex items-center gap-2 rounded-full bg-[var(--surface)] px-4 py-1.5 shadow-xs"
+          onSubmit={async (event) => {
+            event.preventDefault();
+            if (await run(() => api("/api/dictionary", { json: { word } }))) setWord("");
+          }}
+        >
+          <input
+            value={word}
+            onChange={(event) => setWord(event.target.value)}
+            maxLength={60}
+            placeholder="e.g. Saydraft, Dr. Rahman"
+            aria-label="New word"
+            className="min-w-0 flex-1 bg-transparent py-1.5 text-sm text-[var(--ink)] outline-none placeholder:text-[var(--ink-muted)]"
+          />
+          <button
+            type="submit"
+            disabled={busy || !word.trim()}
+            aria-label="Add word"
+            className="flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full bg-[var(--brand)] text-white transition-opacity hover:opacity-85 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <PlusThinIcon className="h-4 w-4" />
+          </button>
+        </form>
+
+        <div className="min-h-[3.5rem]">
+          {entries && entries.length === 0 ? (
+            <div className="flex flex-wrap justify-center gap-2 opacity-60">
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-[var(--surface)] px-3.5 py-1.5 text-sm text-[var(--ink-muted)]">
+                Saydraft <span className="text-xs">+</span>
+              </span>
+            </div>
+          ) : (
+            <ul className="flex flex-wrap gap-2">
+              {entries?.map((entry) => (
+                <li
+                  key={entry.id}
+                  className="inline-flex items-center gap-1.5 rounded-full bg-[var(--surface)] py-1.5 pl-3.5 pr-2 text-sm font-medium text-[var(--ink)]"
+                >
+                  <span>{entry.word}</span>
+                  <button
+                    type="button"
+                    className="cursor-pointer rounded-full p-0.5 text-[var(--ink-muted)] hover:text-[var(--danger)]"
+                    aria-label={`Remove ${entry.word}`}
+                    disabled={busy}
+                    onClick={() => void run(() => api(`/api/dictionary/${entry.id}`, { method: "DELETE" }))}
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-5">
@@ -109,7 +214,14 @@ export function DictionarySection() {
         </div>
       </SectionCard>
 
-      <SectionCard title={entries ? `${entries.length} word${entries.length === 1 ? "" : "s"}` : "Loading…"}>
+      <SectionCard title={entries ? `${entries.length} word${entries.length === 1 ? "" : "s"}` : "Saved words"}>
+        {!entries && (
+          <VocabularyPlaceholder failed={failed} label="dictionary" onRetry={() => void load()}>
+            <div className="h-7 w-16 rounded-full bg-[var(--surface-subtle)]" />
+            <div className="h-7 w-24 rounded-full bg-[var(--surface-subtle)]" />
+            <div className="h-7 w-20 rounded-full bg-[var(--surface-subtle)]" />
+          </VocabularyPlaceholder>
+        )}
         {entries && entries.length === 0 && <p className="text-sm text-[var(--ink-muted)]">Your dictionary is empty.</p>}
         <ul className="flex flex-wrap gap-2">
           {entries?.map((entry) =>
@@ -162,25 +274,108 @@ export function DictionarySection() {
   );
 }
 
-export function ReplacementsSection() {
-  const toast = useToast();
-  const [rules, setRules] = useState<Replacement[] | null>(null);
+export function ReplacementsSection({ embedded = false }: { embedded?: boolean }) {
+  const { items: rules, failed, load } = useVocabularyList<Replacement>("/api/replacements", "replacements");
+  const [creating, setCreating] = useState(false);
   const [find, setFind] = useState("");
   const [replaceWith, setReplaceWith] = useState("");
   const [editing, setEditing] = useState<number | null>(null);
   const [draft, setDraft] = useState({ find: "", replaceWith: "" });
 
-  const load = useCallback(async () => {
-    try {
-      setRules((await api<{ replacements: Replacement[] }>("/api/replacements")).replacements);
-    } catch (error) {
-      toast(errorMessage(error), "error");
-    }
-  }, [toast]);
-  useEffect(() => {
-    void load();
-  }, [load]);
   const { busy, run } = useRunner(load);
+
+  if (embedded) {
+    return (
+      <div className="space-y-5">
+        <div className="flex flex-col items-center text-center">
+          <ScissorsIllustration className="h-11 w-11 text-[var(--ink)]" />
+          <h3 className="mt-2.5 text-lg font-bold text-[var(--ink)]">Text replacements</h3>
+          <p className="mt-1 max-w-xs text-xs text-[var(--ink-subtle)]">
+            Save replacement to speak the things you type all the time.
+          </p>
+        </div>
+
+        {rules && rules.length === 0 ? (
+          <div className="flex flex-wrap justify-center gap-2">
+            {[
+              ["John", "Joan"],
+              ["Saydrft", "Saydraft"],
+              ["My email", "joan@saydraft.app"],
+            ].map(([from, to]) => (
+              <span
+                key={from}
+                className="inline-flex items-center gap-1.5 rounded-full bg-[var(--surface)] px-3.5 py-1.5 text-xs text-[var(--ink-muted)]"
+              >
+                <span className="line-through">{from}</span>
+                <span aria-hidden="true" className="text-[var(--sky)]">→</span>
+                <span className="font-medium text-[var(--ink)]">{to}</span>
+              </span>
+            ))}
+          </div>
+        ) : (
+          <div className="max-h-56 overflow-y-auto rounded-2xl bg-[var(--surface-panel-card)] divide-y divide-[var(--border)]/70">
+            {rules?.map((rule) => (
+              <div key={rule.id} className="flex items-center gap-2.5 px-4 py-2.5">
+                <div className={`min-w-0 flex-1 text-sm ${rule.isActive ? "" : "opacity-50"}`}>
+                  <span className="text-[var(--ink-muted)] line-through">{rule.find}</span>
+                  <span className="mx-1.5 text-[var(--brand)]">→</span>
+                  <span className="font-medium text-[var(--ink)]">{rule.replaceWith || "(remove)"}</span>
+                </div>
+                <Switch
+                  checked={rule.isActive}
+                  onChange={(value) => void run(() => api(`/api/replacements/${rule.id}`, { method: "PATCH", json: { isActive: value } }))}
+                  label={`Toggle rule ${rule.find}`}
+                  hideLabel
+                />
+                <button
+                  type="button"
+                  className="icon-btn h-7 w-7 hover:!text-[var(--danger)]"
+                  aria-label={`Delete rule for ${rule.find}`}
+                  disabled={busy}
+                  onClick={() => void run(() => api(`/api/replacements/${rule.id}`, { method: "DELETE" }))}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {creating ? (
+          <form
+            className="space-y-2.5 rounded-2xl bg-[var(--surface-panel-card)] p-4"
+            onSubmit={async (event) => {
+              event.preventDefault();
+              if (await run(() => api("/api/replacements", { json: { find, replaceWith } }))) {
+                setFind("");
+                setReplaceWith("");
+                setCreating(false);
+              }
+            }}
+          >
+            <div className="grid gap-2 sm:grid-cols-2">
+              <input value={find} onChange={(event) => setFind(event.target.value)} maxLength={100} placeholder="When I say…" aria-label="Text to replace" autoFocus className="field rounded-full bg-[var(--surface-input)]" />
+              <input value={replaceWith} onChange={(event) => setReplaceWith(event.target.value)} maxLength={500} placeholder="Replace with…" aria-label="Replacement" className="field rounded-full bg-[var(--surface-input)]" />
+            </div>
+            <div className="flex justify-end gap-2">
+              <button type="button" className="btn btn-ghost btn-sm" onClick={() => setCreating(false)}>
+                Cancel
+              </button>
+              <button type="submit" disabled={busy || !find.trim()} className="btn btn-purple btn-sm">
+                Save rule
+              </button>
+            </div>
+          </form>
+        ) : (
+          <div className="flex justify-center">
+            <button type="button" onClick={() => setCreating(true)} className="btn btn-purple h-11 rounded-full px-6 text-sm">
+              <Plus className="h-4 w-4" /> Add new
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-5">
@@ -208,7 +403,12 @@ export function ReplacementsSection() {
         </form>
       </SectionCard>
 
-      <SectionCard title={rules ? `${rules.length} rule${rules.length === 1 ? "" : "s"}` : "Loading…"}>
+      <SectionCard title={rules ? `${rules.length} rule${rules.length === 1 ? "" : "s"}` : "Saved rules"}>
+        {!rules && (
+          <VocabularyPlaceholder failed={failed} label="text replacements" onRetry={() => void load()}>
+            <div className="h-10 w-full rounded-xl bg-[var(--surface-subtle)]" />
+          </VocabularyPlaceholder>
+        )}
         {rules && rules.length === 0 && <p className="text-sm text-[var(--ink-muted)]">No shortcuts yet. Example: “gonna” → “going to”.</p>}
         <ul className="divide-y divide-[var(--border)]">
           {rules?.map((rule) => (
@@ -293,7 +493,7 @@ export function TagsSection() {
   return (
     <div className="space-y-5">
       <SectionHeader title="Tags" description="Tags appear right above your notes list for quick filtering." />
-      <SectionCard>{tags ? <TagManager tags={tags} onChanged={() => void load()} /> : <div className="h-24 animate-pulse rounded-2xl bg-[var(--surface-subtle)]" />}</SectionCard>
+      <SectionCard>{tags ? <TagManager compact tags={tags} onChanged={() => void load()} /> : <div className="h-24 animate-pulse rounded-2xl bg-[var(--surface-subtle)]" />}</SectionCard>
     </div>
   );
 }

@@ -3,19 +3,19 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, FileAudio, Upload, X } from "lucide-react";
-import { AnimatePresence, motion } from "motion/react";
+import { FileAudio, X } from "lucide-react";
 import { api, errorMessage } from "@/lib/api-client";
 import { formatBytes, formatDuration } from "@/lib/format";
 import { LANGUAGES } from "@/lib/languages";
 import { CONVERTIBLE_EXTENSIONS, DEFAULT_UPLOAD_MAX_MB, DIRECT_AUDIO_EXTENSIONS, extensionFromName } from "@/lib/limits";
-import { SPRING_SMOOTH, SPRING_SNAPPY } from "@/lib/motion";
 import type { Note } from "@/lib/types";
+import { BackArrowIcon, UploadTrayBoxIcon } from "../icons";
 import { uploadAudioNote } from "../record/upload-flow";
 import { useAppStatus } from "../StatusProvider";
 import { useToast } from "../Toast";
 import { ProgressBar, Spinner, Switch } from "../ui";
 
+/** Full-bleed dashed dropzone matching Letterly's /record/upload page. */
 export function UploadView() {
   const params = useSearchParams();
   const router = useRouter();
@@ -106,105 +106,97 @@ export function UploadView() {
   }
 
   return (
-    <div className="mx-auto flex min-h-screen max-w-2xl flex-col px-5 py-4 sm:px-6">
-      <div className="pt-1">
+    <div className="flex min-h-screen w-full flex-col bg-[var(--canvas)]">
+      <header className="sticky top-0 z-20 flex min-h-[3.875rem] w-full items-center justify-between border-b border-[var(--border)]/70 bg-[var(--canvas)]/90 px-5 backdrop-blur-md">
         <Link
           href={appendTo ? `/notes/${appendTo}` : "/"}
-          className="frosted-topbar inline-flex h-11 items-center gap-1.5 rounded-full px-4 text-sm font-semibold text-[var(--ink)] transition-opacity hover:opacity-65"
+          aria-label="Back"
+          className="flex h-9 w-9 items-center justify-center rounded-full text-[var(--ink)] transition-opacity hover:opacity-65"
         >
-          <ArrowLeft className="h-4 w-4" /> Back
+          <BackArrowIcon className="h-5 w-5" />
         </Link>
-      </div>
-
-      <motion.main
-        initial={{ opacity: 0, y: 10 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={SPRING_SMOOTH}
-        className="py-8"
-      >
-        <h1 className="text-[1.75rem] font-bold tracking-tight text-[var(--ink)]">
-          {appendTo ? "Add audio to a note" : "Upload audio or video"}
-        </h1>
-        <p className="mt-1.5 text-[0.9375rem] text-[var(--ink-muted)]">
-          {appendNote
-            ? `The transcript will be added to the end of "${appendNote.title || "Untitled note"}".`
-            : "We'll transcribe your recording and turn it into a note automatically."}
-        </p>
-
-        <motion.div
-          role="button"
-          tabIndex={0}
-          aria-label="Choose a file to upload"
-          animate={{ scale: dragging ? 1.015 : 1 }}
-          whileTap={!uploading ? { scale: 0.99 } : undefined}
-          transition={SPRING_SNAPPY}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" || event.key === " ") {
-              event.preventDefault();
-              inputRef.current?.click();
-            }
-          }}
-          onClick={() => !uploading && inputRef.current?.click()}
-          onDragOver={(event) => {
-            event.preventDefault();
-            setDragging(true);
-          }}
-          onDragLeave={() => setDragging(false)}
-          onDrop={(event) => {
-            event.preventDefault();
-            setDragging(false);
-            if (!uploading) choose(event.dataTransfer.files?.[0]);
-          }}
-          className={`surface-card mt-6 flex cursor-pointer flex-col items-center justify-center rounded-[2rem] border-2 border-dashed px-6 py-16 text-center transition-[background-color,border-color] duration-200 ${
-            dragging ? "border-[var(--brand)] bg-[var(--brand-soft)]" : "hover:bg-[var(--surface-hover)]"
-          }`}
-        >
-          <input
-            ref={inputRef}
-            type="file"
-            accept={`audio/*,video/*,${[...allowed].map((extension) => `.${extension}`).join(",")}`}
-            className="hidden"
-            onChange={(event) => {
-              choose(event.target.files?.[0]);
-              event.target.value = "";
-            }}
-          />
-          <span className="mb-3 flex h-14 w-14 items-center justify-center rounded-full bg-[var(--brand-soft)] text-[var(--brand)]">
-            <Upload className="h-6 w-6" />
-          </span>
-          <p className="text-base font-semibold text-[var(--ink)]">Drop a file here, or click to browse</p>
-          <p className="mt-1 max-w-sm text-xs text-[var(--ink-muted)]">
-            {extendedFormats
-              ? `Supports MP3, M4A, WAV, WebM, OGG, FLAC, AAC, MP4, MOV & MKV up to ${formatBytes(maxBytes)}`
-              : `Supports MP3, M4A, WAV, WebM, OGG, FLAC, or MP4 up to ${formatBytes(maxBytes)}`}
+        {appendNote && (
+          <p className="text-xs font-medium text-[var(--ink-muted)]">
+            Adding to <span className="font-semibold text-[var(--ink)]">{appendNote.title || "Untitled note"}</span>
           </p>
-        </motion.div>
+        )}
+        <span className="w-9" />
+      </header>
 
-        <AnimatePresence initial={false}>
-          {file && previewUrl && (
-            <motion.div
-              key={`${file.name}-${file.size}`}
-              initial={{ opacity: 0, y: 12, scale: 0.98 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: -8, scale: 0.98 }}
-              transition={SPRING_SMOOTH}
-              className="surface-card mt-5 space-y-4 rounded-[1.75rem] p-5"
-            >
+      <main className="flex flex-1 flex-col p-6 sm:p-12">
+        <input
+          ref={inputRef}
+          type="file"
+          accept={`audio/*,video/*,${[...allowed].map((extension) => `.${extension}`).join(",")}`}
+          className="hidden"
+          onChange={(event) => {
+            choose(event.target.files?.[0]);
+            event.target.value = "";
+          }}
+        />
+
+        {!file || !previewUrl ? (
+          <div
+            role="button"
+            tabIndex={0}
+            aria-label="Choose a file to upload"
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                inputRef.current?.click();
+              }
+            }}
+            onClick={() => !uploading && inputRef.current?.click()}
+            onDragOver={(event) => {
+              event.preventDefault();
+              setDragging(true);
+            }}
+            onDragLeave={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false);
+            }}
+            onDrop={(event) => {
+              event.preventDefault();
+              setDragging(false);
+              if (!uploading) choose(event.dataTransfer.files?.[0]);
+            }}
+            className={`flex flex-1 cursor-pointer flex-col items-center justify-center rounded-[1.25rem] border border-dashed p-8 text-center transition-colors duration-150 ${
+              dragging ? "border-[var(--brand)] bg-[var(--brand-soft)]" : "border-[var(--ash-500)] hover:bg-[var(--surface-panel)]/35"
+            }`}
+          >
+            <UploadTrayBoxIcon className="h-6 w-6 text-[var(--ink)]" />
+            <p className="mt-4 text-[1.0625rem] font-medium tracking-tight text-[var(--ink)]">
+              Drag and drop a file to upload it
+            </p>
+            <p className="mt-1.5 max-w-md text-xs text-[var(--ink-muted)] sm:text-sm">
+              {extendedFormats
+                ? `Supported: mp3, mp4, mpeg, mpga, m4a, wav, webm, ogg, flac, mov (up to ${formatBytes(maxBytes)})`
+                : `Supported: mp3, mp4, mpeg, mpga, m4a, wav, webm (up to ${formatBytes(maxBytes)})`}
+            </p>
+            {error && (
+              <p role="alert" className="alert alert-error mt-6 max-w-md">
+                {error}
+              </p>
+            )}
+          </div>
+        ) : (
+          <div className="flex flex-1 flex-col items-center justify-center rounded-[1.25rem] border border-dashed border-[var(--ash-500)] p-6">
+            <div className="w-full max-w-md space-y-4 rounded-[2rem] bg-[var(--surface-panel)] p-6 shadow-sm">
               <div className="flex items-center gap-3">
                 <FileAudio className="h-5 w-5 shrink-0 text-[var(--brand)]" />
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-semibold">{file.name}</p>
+                  <p className="truncate text-sm font-semibold text-[var(--ink)]">{file.name}</p>
                   <p className="text-xs text-[var(--ink-muted)]">
                     {formatBytes(file.size)}
                     {durationSec ? ` · ${formatDuration(durationSec)}` : ""}
                   </p>
                 </div>
                 {!uploading && (
-                  <button type="button" className="icon-btn" aria-label="Remove file" onClick={() => setFile(null)}>
+                  <button type="button" className="circle-close h-8 w-8" aria-label="Remove file" onClick={() => setFile(null)}>
                     <X className="h-4 w-4" />
                   </button>
                 )}
               </div>
+
               <audio
                 controls
                 preload="metadata"
@@ -217,7 +209,7 @@ export function UploadView() {
               />
 
               <div className="grid gap-3 sm:grid-cols-2">
-                <label className="flex flex-col gap-1 rounded-2xl border border-[var(--border)] bg-[var(--surface-subtle)] px-3.5 py-2.5 text-xs font-medium text-[var(--ink-muted)]">
+                <label className="flex flex-col gap-1 rounded-2xl bg-[var(--surface-panel-card)] px-3.5 py-2.5 text-xs font-medium text-[var(--ink-muted)]">
                   Speaker&apos;s language
                   <select
                     value={language}
@@ -234,8 +226,8 @@ export function UploadView() {
                   </select>
                 </label>
                 {status?.speakersAvailable && (
-                  <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-subtle)] px-3.5 py-3">
-                    <Switch checked={speakers} onChange={setSpeakers} disabled={uploading} label="Multi-speaker" description="Label who said what" />
+                  <div className="flex items-center rounded-2xl bg-[var(--surface-panel-card)] px-3.5 py-3">
+                    <Switch checked={speakers} onChange={setSpeakers} disabled={uploading} label="Multi-speaker" />
                   </div>
                 )}
               </div>
@@ -255,22 +247,25 @@ export function UploadView() {
                   </div>
                 </div>
               ) : (
-                <div className="flex justify-end">
-                  <button type="button" className="btn btn-primary" onClick={() => void submit()}>
+                <div className="flex items-center justify-between gap-2 pt-1">
+                  <button type="button" className="btn btn-secondary btn-sm" onClick={() => inputRef.current?.click()}>
+                    Change file
+                  </button>
+                  <button type="button" className="btn btn-purple" onClick={() => void submit()}>
                     {appendTo ? "Add and transcribe" : "Transcribe file"}
                   </button>
                 </div>
               )}
-            </motion.div>
-          )}
-        </AnimatePresence>
 
-        {error && (
-          <div role="alert" className="alert alert-error mt-4">
-            {error}
+              {error && (
+                <div role="alert" className="alert alert-error">
+                  {error}
+                </div>
+              )}
+            </div>
           </div>
         )}
-      </motion.main>
+      </main>
     </div>
   );
 }

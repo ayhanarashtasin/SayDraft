@@ -8,6 +8,7 @@ import { formatDateTime } from "@/lib/format";
 import { SPRING_SNAPPY } from "@/lib/motion";
 import type { IntegrationAction } from "@/lib/types";
 import { useConfirm } from "../ConfirmDialog";
+import { NotionDocIcon, WebhookNodesIcon } from "../icons";
 import { useToast } from "../Toast";
 import { Accordion, Dialog, Spinner, Switch } from "../ui";
 import { SectionCard, SectionHeader } from "./SectionLayout";
@@ -43,7 +44,7 @@ const SAMPLE_PAYLOAD = `{
   "sentAt": "2026-11-22T09:16:11.000Z"
 }`;
 
-export function IntegrationsSection() {
+export function IntegrationsSection({ embedded = false }: { embedded?: boolean }) {
   const toast = useToast();
   const askConfirm = useConfirm();
   const [actions, setActions] = useState<IntegrationAction[] | null>(null);
@@ -109,6 +110,175 @@ export function IntegrationsSection() {
     } catch (error) {
       toast(errorMessage(error), "error");
     }
+  }
+
+  const draftDialog = (
+    <Dialog
+      open={draft !== null}
+      onClose={() => setDraft(null)}
+      title={draft?.id ? "Edit connection" : draft?.type === "notion" ? "Connect a Notion page" : "Add webhook link"}
+      footer={
+        <>
+          <button type="button" className="btn btn-ghost" onClick={() => setDraft(null)}>
+            Cancel
+          </button>
+          <button type="button" className="btn btn-purple" disabled={busy === "save"} onClick={() => void save()}>
+            {busy === "save" && <Spinner className="h-3.5 w-3.5" />} Save
+          </button>
+        </>
+      }
+    >
+      {draft && (
+        <div className="space-y-4">
+          <label className="block text-sm font-medium">
+            Name
+            <input
+              value={draft.title}
+              onChange={(event) => setDraft({ ...draft, title: event.target.value })}
+              maxLength={60}
+              placeholder={draft.type === "webhook" ? "e.g. Zapier to Google Docs" : "e.g. Notion inbox"}
+              className="field mt-1.5"
+            />
+          </label>
+          {draft.type === "webhook" ? (
+            <label className="block text-sm font-medium">
+              Destination URL
+              <input
+                value={draft.url}
+                onChange={(event) => setDraft({ ...draft, url: event.target.value })}
+                type="url"
+                placeholder="https://hooks.zapier.com/hooks/catch/…"
+                className="field mt-1.5 font-mono text-[13px]"
+              />
+            </label>
+          ) : (
+            <>
+              <ol className="list-decimal space-y-1 pl-5 text-xs text-[var(--ink-muted)]">
+                <li>Create an internal integration in your Notion settings and copy its secret.</li>
+                <li>Open the destination Notion page, choose ⋯ → Connections, and add it.</li>
+                <li>Paste your Notion page link below.</li>
+              </ol>
+              <label className="block text-sm font-medium">
+                Integration secret
+                <input
+                  value={draft.token}
+                  onChange={(event) => setDraft({ ...draft, token: event.target.value })}
+                  type="password"
+                  autoComplete="off"
+                  placeholder={draft.id ? "Leave blank to keep saved secret" : "Paste secret token"}
+                  className="field mt-1.5 font-mono text-[13px]"
+                />
+              </label>
+              <label className="block text-sm font-medium">
+                Page link
+                <input
+                  value={draft.pageUrl}
+                  onChange={(event) => setDraft({ ...draft, pageUrl: event.target.value })}
+                  placeholder="https://www.notion.so/My-notes-…"
+                  className="field mt-1.5 font-mono text-[13px]"
+                />
+              </label>
+            </>
+          )}
+          <div className="space-y-3 rounded-2xl bg-[var(--surface-panel-card)] p-3">
+            <Switch checked={draft.onTranscript} onChange={(value) => setDraft({ ...draft, onTranscript: value })} label="Send automatically when transcribed" />
+            <Switch checked={draft.onRewrite} onChange={(value) => setDraft({ ...draft, onRewrite: value })} label="Send automatically when rewritten" />
+          </div>
+        </div>
+      )}
+    </Dialog>
+  );
+
+  if (embedded) {
+    return (
+      <div className="space-y-5">
+        <div className="flex flex-col items-center text-center">
+          <div className="flex items-center gap-2">
+            <h3 className="text-xl font-bold text-[var(--ink)]">Introducing Actions</h3>
+            <span className="text-lg">⚡</span>
+            <span className="rounded-full bg-[var(--surface-panel-card)] px-2.5 py-0.5 text-[11px] font-semibold text-[var(--ink-subtle)]">
+              Beta
+            </span>
+          </div>
+          <p className="mt-1 text-sm text-[var(--ink-subtle)]">Easily connect Saydraft with tools you love!</p>
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="flex flex-col items-center rounded-2xl border border-[var(--border)] bg-[var(--surface-panel)]/40 p-5 text-center">
+            <NotionDocIcon className="h-12 w-12" />
+            <h4 className="mt-3 text-base font-bold text-[var(--ink)]">Notion</h4>
+            <p className="mt-1 text-xs leading-relaxed text-[var(--ink-muted)]">
+              Send your notes and rewrites directly into any Notion page.
+            </p>
+            <button
+              type="button"
+              onClick={() => setDraft({ ...EMPTY, type: "notion" })}
+              className="mt-4 cursor-pointer rounded-full bg-[var(--surface-panel-card)] px-5 py-1.5 text-xs font-semibold text-[var(--ink)] transition-opacity hover:opacity-75"
+            >
+              Choose
+            </button>
+          </div>
+
+          <div className="flex flex-col items-center rounded-2xl border border-[var(--border)] bg-[var(--surface-panel)]/40 p-5 text-center">
+            <WebhookNodesIcon className="h-12 w-12" />
+            <h4 className="mt-3 text-base font-bold text-[var(--ink)]">Webhooks</h4>
+            <p className="mt-1 text-xs leading-relaxed text-[var(--ink-muted)]">
+              With webhooks, you can set up your notes to be sent to Zapier, Make, n8n, or any app.
+            </p>
+            <button
+              type="button"
+              onClick={() => setDraft({ ...EMPTY, type: "webhook" })}
+              className="mt-4 cursor-pointer rounded-full bg-[var(--surface-panel-card)] px-5 py-1.5 text-xs font-semibold text-[var(--ink)] transition-opacity hover:opacity-75"
+            >
+              Choose
+            </button>
+          </div>
+        </div>
+
+        {actions && actions.length > 0 && (
+          <div className="space-y-2">
+            <p className="text-xs font-semibold text-[var(--ink-muted)]">Connected actions</p>
+            <ul className="divide-y divide-[var(--border)]/70 rounded-2xl bg-[var(--surface-panel-card)]">
+              {actions.map((action) => (
+                <li key={action.id} className="flex items-center gap-2.5 px-4 py-3">
+                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-[var(--surface)]">
+                    {action.type === "webhook" ? <Webhook className="h-4 w-4" /> : <BookOpen className="h-4 w-4" />}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-semibold text-[var(--ink)]">{action.title}</p>
+                    <p className="truncate text-xs text-[var(--ink-muted)]">{action.target}</p>
+                  </div>
+                  <button type="button" className="btn btn-secondary btn-sm" disabled={busy === action.id} onClick={() => void test(action)}>
+                    {busy === action.id ? <Spinner className="h-3 w-3" /> : "Test"}
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-btn h-7 w-7 hover:!text-[var(--danger)]"
+                    aria-label={`Delete ${action.title}`}
+                    onClick={async () => {
+                      const confirmed = await askConfirm({
+                        title: "Disconnect this integration?",
+                        subject: action.title,
+                        confirmLabel: "Disconnect",
+                        tone: "danger",
+                        icon: Unplug,
+                      });
+                      if (!confirmed) return;
+                      await api(`/api/actions/${action.id}`, { method: "DELETE" });
+                      await load();
+                    }}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {draftDialog}
+      </div>
+    );
   }
 
   return (
@@ -240,80 +410,7 @@ export function IntegrationsSection() {
         </div>
       </SectionCard>
 
-      <Dialog
-        open={draft !== null}
-        onClose={() => setDraft(null)}
-        title={draft?.id ? "Edit connection" : draft?.type === "notion" ? "Connect a Notion page" : "Add automation link"}
-        footer={
-          <>
-            <button type="button" className="btn btn-ghost" onClick={() => setDraft(null)}>
-              Cancel
-            </button>
-            <button type="button" className="btn btn-primary" disabled={busy === "save"} onClick={() => void save()}>
-              {busy === "save" && <Spinner className="h-3.5 w-3.5" />} Save
-            </button>
-          </>
-        }
-      >
-        {draft && (
-          <div className="space-y-4">
-            <label className="block text-sm font-medium">
-              Name
-              <input
-                value={draft.title}
-                onChange={(event) => setDraft({ ...draft, title: event.target.value })}
-                maxLength={60}
-                placeholder={draft.type === "webhook" ? "e.g. Zapier to Google Docs" : "e.g. Notion inbox"}
-                className="field mt-1.5"
-              />
-            </label>
-            {draft.type === "webhook" ? (
-              <label className="block text-sm font-medium">
-                Destination URL
-                <input
-                  value={draft.url}
-                  onChange={(event) => setDraft({ ...draft, url: event.target.value })}
-                  type="url"
-                  placeholder="https://hooks.zapier.com/hooks/catch/…"
-                  className="field mt-1.5 font-mono text-[13px]"
-                />
-              </label>
-            ) : (
-              <>
-                <ol className="list-decimal space-y-1 pl-5 text-xs text-[var(--ink-muted)]">
-                  <li>Create an internal integration in your Notion settings and copy its secret.</li>
-                  <li>Open the destination Notion page, choose ⋯ → Connections, and add it.</li>
-                  <li>Paste your Notion page link below.</li>
-                </ol>
-                <label className="block text-sm font-medium">
-                  Integration secret
-                  <input
-                    value={draft.token}
-                    onChange={(event) => setDraft({ ...draft, token: event.target.value })}
-                    type="password"
-                    autoComplete="off"
-                    placeholder={draft.id ? "Leave blank to keep saved secret" : "Paste secret token"}
-                    className="field mt-1.5 font-mono text-[13px]"
-                  />
-                </label>
-                <label className="block text-sm font-medium">
-                  Page link
-                  <input
-                    value={draft.pageUrl}
-                    onChange={(event) => setDraft({ ...draft, pageUrl: event.target.value })}
-                    placeholder="https://www.notion.so/My-notes-…"
-                    className="field mt-1.5 font-mono text-[13px]"
-                  />
-                </label>
-              </>
-            )}
-            <div className="space-y-3 rounded-2xl bg-[var(--surface-subtle)] p-3">
-              <Switch checked={draft.onTranscript} onChange={(value) => setDraft({ ...draft, onTranscript: value })} label="Send automatically when transcribed" />
-              <Switch checked={draft.onRewrite} onChange={(value) => setDraft({ ...draft, onRewrite: value })} label="Send automatically when rewritten" />
-            </div>
-          </div>
-        )}
-      </Dialog>
+      {draftDialog}
     </div>
   );
 }

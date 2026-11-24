@@ -14,31 +14,41 @@ import {
   updateTranscriptionProgress,
 } from "../server/pipeline.ts";
 
+const TRANSCRIPTION_BATCH_SIZE = 3;
+
 export async function transcribeNote(job: TranscriptionJob): Promise<void> {
   "use workflow";
   let autoRewritePromptId: number | null;
   try {
     const plan = await loadTranscriptionPlan(job);
     const parts: AudioPiece[] = [];
+    const byFile = new Map<number, Awaited<ReturnType<typeof transcribeAudioPiece>>[]>();
     const chunkSec = plan.speakers ? DIARIZE_CHUNK_SEC : TRANSCRIBE_CHUNK_SEC;
-    for (let index = 0; index < plan.fileIds.length; index += 1) {
-      const file = await prepareAudio(job, plan, index);
-      const duration = file.duration ?? 0;
-      if (!plan.ffmpeg || (file.size <= DIRECT_TRANSCRIBE_MAX_BYTES && duration <= DIRECT_TRANSCRIBE_MAX_SEC)) {
-        parts.push({ file });
-      } else {
-        // Discard trailing container padding of less than a fifth of a second.
-        const chunks = Math.max(1, Math.ceil((duration - 0.2) / chunkSec));
-        for (let part = 0; part < chunks; part += 1) {
-          parts.push({ file, startSec: part * chunkSec, lengthSec: chunkSec });
+    const prepareBatchSize = plan.isRecording ? TRANSCRIPTION_BATCH_SIZE : 1;
+    for (let offset = 0; offset < plan.fileIds.length; offset += prepareBatchSize) {
+      const batch = plan.fileIds.slice(offset, offset + prepareBatchSize);
+      const prepared = await Promise.all(batch.map((_, index) => prepareAudio(job, plan, offset + index, index === 0)));
+      for (const { file, transcript } of prepared) {
+        if (transcript) {
+          byFile.set(file.id, [transcript]);
+          continue;
+        }
+        const duration = file.duration ?? 0;
+        if (!plan.ffmpeg || (file.size <= DIRECT_TRANSCRIBE_MAX_BYTES && duration <= DIRECT_TRANSCRIBE_MAX_SEC)) {
+          parts.push({ file });
+        } else {
+          // Discard trailing container padding of less than a fifth of a second.
+          const chunks = Math.max(1, Math.ceil((duration - 0.2) / chunkSec));
+          for (let part = 0; part < chunks; part += 1) {
+            parts.push({ file, startSec: part * chunkSec, lengthSec: chunkSec });
+          }
         }
       }
     }
 
-    const byFile = new Map<number, Awaited<ReturnType<typeof transcribeAudioPiece>>[]>();
-    for (let offset = 0; offset < parts.length; offset += 3) {
+    for (let offset = 0; offset < parts.length; offset += TRANSCRIPTION_BATCH_SIZE) {
       await updateTranscriptionProgress(job, offset, parts.length);
-      const batch = parts.slice(offset, offset + 3);
+      const batch = parts.slice(offset, offset + TRANSCRIPTION_BATCH_SIZE);
       const results = await Promise.all(batch.map((part) => transcribeAudioPiece(job, plan, part)));
       for (const [index, result] of results.entries()) {
         const id = batch[index].file.id;
@@ -48,12 +58,13 @@ export async function transcribeNote(job: TranscriptionJob): Promise<void> {
       }
     }
 
-    const files = [...byFile].map(([id, results]) => ({
-      id,
-      text: plan.speakers
+    const files = plan.fileIds.map((id) => {
+      const results = byFile.get(id) ?? [];
+      const text = plan.speakers
         ? formatSpeakerSegments(results.flatMap((part) => part.segments ?? (part.text ? [{ speaker: "?", text: part.text }] : [])))
-        : joinTranscriptParts(results.map((part) => part.text)),
-    }));
+        : joinTranscriptParts(results.map((part) => part.text));
+      return { id, text };
+    });
     const saved = await saveTranscription(job, files);
     if (!saved) return;
     autoRewritePromptId = plan.autoRewritePromptId;

@@ -3,13 +3,10 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { ArrowLeft } from "lucide-react";
-import { motion } from "motion/react";
+import { BackArrowIcon } from "@/components/icons";
 import { useAppStatus } from "@/components/StatusProvider";
 import { Spinner, TagDot } from "@/components/ui";
 import { api, errorMessage } from "@/lib/api-client";
-import { countWords } from "@/lib/format";
-import { SPRING_SMOOTH } from "@/lib/motion";
 import type { Note, Tag } from "@/lib/types";
 
 const DRAFT_KEY = "saydraft-new-note-draft";
@@ -66,31 +63,23 @@ export default function NewNotePage() {
 
   return (
     <form onSubmit={save} className="flex min-h-screen w-full flex-col items-center bg-[var(--canvas)]">
-      <div className="sticky top-0 z-20 flex min-h-[3.875rem] w-full items-center justify-between border-b border-[var(--border)]/70 bg-[var(--canvas)]/88 px-4 backdrop-blur-md">
-        <Link href="/" aria-label="Back to notes" className="icon-btn text-[var(--ink-subtle)]">
-          <ArrowLeft className="h-5 w-5" />
+      <div className="sticky top-0 z-20 flex min-h-[3.875rem] w-full items-center justify-between border-b border-[var(--border)]/70 bg-[var(--canvas)]/88 px-5 backdrop-blur-md">
+        <Link href="/" aria-label="Back to notes" className="flex h-9 w-9 items-center justify-center rounded-full text-[var(--ink)] transition-opacity hover:opacity-65">
+          <BackArrowIcon className="h-5 w-5" />
         </Link>
-        <div className="flex items-center gap-3">
-          <span className="text-xs text-[var(--ink-muted)]">{countWords(body).toLocaleString()} words</span>
-          <button type="submit" disabled={!body.trim() || saving} className="btn btn-primary btn-sm">
-            {saving && <Spinner className="h-3.5 w-3.5" />} {saving ? "Saving…" : "Save note"}
-          </button>
-        </div>
+        <button type="submit" disabled={!body.trim() || saving} className="btn btn-primary btn-sm">
+          {saving && <Spinner className="h-3.5 w-3.5" />} {saving ? "Saving…" : "Save note"}
+        </button>
       </div>
 
-      <motion.main
-        initial={{ opacity: 0, y: 10 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={SPRING_SMOOTH}
-        className="flex w-full max-w-[44rem] flex-1 flex-col px-5 pb-12 pt-8 sm:px-10 sm:pt-12"
-      >
+      <main className="flex w-full max-w-[40.75rem] flex-1 flex-col px-5 pb-12 pt-8 sm:px-6 sm:pt-10">
         <input
           value={title}
           onChange={(event) => setTitle(event.target.value)}
           maxLength={200}
           placeholder={status?.configured && status.settings.autoTitle ? "Title (or leave blank to generate one)" : "Title"}
           aria-label="Title"
-          className="w-full bg-transparent text-[1.75rem]/[2.125rem] font-semibold tracking-tight text-[var(--ink)] outline-none placeholder:text-[var(--ink-muted)]/50"
+          className="w-full bg-transparent text-[1.75rem]/[2.125rem] font-bold tracking-[-0.02em] text-[var(--ink)] outline-none placeholder:text-[var(--ink-muted)]/50"
         />
 
         {tags.length > 0 && (
@@ -119,7 +108,7 @@ export default function NewNotePage() {
           placeholder="Start writing or paste your text…"
           aria-label="Note text"
           autoFocus
-          className="prose-note mt-6 min-h-[55vh] w-full flex-1 resize-none bg-transparent text-[1.0625rem]/[1.65] text-[var(--ink)] outline-none [field-sizing:content] placeholder:text-[var(--ink-muted)]/55"
+          className="prose-note mt-6 min-h-[55vh] w-full flex-1 resize-none bg-transparent text-[1.0625rem]/[1.65] text-[var(--ink-body)] outline-none [field-sizing:content] placeholder:text-[var(--ink-muted)]/55"
         />
 
         {error && (
@@ -127,7 +116,7 @@ export default function NewNotePage() {
             {error}
           </p>
         )}
-      </motion.main>
+      </main>
     </form>
   );
 }

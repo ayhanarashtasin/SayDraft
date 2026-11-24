@@ -11,13 +11,17 @@ import { type JournalSession, deleteSession, listSessions, loadSegments } from "
 import { downloadBlob, extensionForType, uploadAudioNote } from "./upload-flow";
 
 /** Sessions untouched for this long are no longer being recorded (the recorder saves a heartbeat). */
-const STALE_MS = 20_000;
+export const STALE_MS = 20_000;
+
+export function isRecoverableSession(session: JournalSession, excludeId?: string | null): boolean {
+  return session.id !== excludeId && Date.now() - session.updatedAt > STALE_MS;
+}
 
 export function useRecoverableSessions(excludeId?: string | null) {
   const [sessions, setSessions] = useState<JournalSession[]>([]);
   const refresh = useCallback(async () => {
     const all = await listSessions();
-    setSessions(all.filter((session) => session.id !== excludeId && Date.now() - session.updatedAt > STALE_MS));
+    setSessions(all.filter((session) => isRecoverableSession(session, excludeId)));
   }, [excludeId]);
   useEffect(() => {
     void refresh();

@@ -3,29 +3,30 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowLeft, Download, Mic, MonitorSpeaker, Pause, Play, RotateCcw, Square, Trash2, Users } from "lucide-react";
+import { ChevronDown, Download, Mic, MonitorSpeaker, RotateCcw, Square, Trash2, Users } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { api, errorMessage } from "@/lib/api-client";
-import { formatDuration } from "@/lib/format";
+import { formatCountdown } from "@/lib/format";
 import { LANGUAGES } from "@/lib/languages";
 import { MAX_RECORDING_SEC, RECORDING_BITRATE, RECORDING_SEGMENT_SEC } from "@/lib/limits";
 import { EASE_OUT, SPRING_SMOOTH, SPRING_SNAPPY, TAP_ICON, TAP_PRESS } from "@/lib/motion";
 import type { Note } from "@/lib/types";
+import { BackArrowIcon, PauseBarsIcon, PlayTriangleIcon, RecordStartRingIcon, RestartLoopIcon, StopSquareRingIcon } from "../icons";
 import { useAppStatus } from "../StatusProvider";
 import { useConfirm } from "../ConfirmDialog";
 import { useToast } from "../Toast";
-import { Accordion, CuteMicIcon, ProgressBar, Spinner, Switch } from "../ui";
-import { type AudioSource, openAudioSource, readLevel } from "./audio-source";
-import { type JournalSession, appendChunk, deleteSession, saveSession } from "./journal";
-import { RecoveryPanel } from "./RecoveryPanel";
+import { ProgressBar, Spinner, Switch } from "../ui";
+import { type AudioSource, openAudioSource, readFourBands } from "./audio-source";
+import { type JournalSession, appendChunk, deleteSession, listSessions, saveSession } from "./journal";
+import { RecoveryPanel, isRecoverableSession } from "./RecoveryPanel";
 import { type SegmentInfo, SegmentedRecorder, pickMimeType } from "./segment-recorder";
 import { downloadBlob, extensionForType, uploadAudioNote } from "./upload-flow";
 
 type Phase = "idle" | "starting" | "recording" | "paused" | "stopping" | "uploading" | "failed";
 type Mode = "voice" | "meeting";
 
-const BARS = 48;
 const MIC_KEY = "saydraft-mic";
+const BELL_WEIGHTS: [number, number, number, number] = [0.76, 1.0, 1.0, 0.76];
 
 export function RecorderView() {
   const params = useSearchParams();
@@ -34,32 +35,41 @@ export function RecorderView() {
   const askConfirm = useConfirm();
   const { status } = useAppStatus();
   const appendTo = Number(params.get("append")) > 0 ? Number(params.get("append")) : null;
+  const recoverMode = params.get("recover") === "1";
   const maxSec = status?.limits.maxRecordingSec ?? MAX_RECORDING_SEC;
 
   const [mode, setMode] = useState<Mode>(params.get("mode") === "meeting" ? "meeting" : "voice");
   const [phase, setPhase] = useState<Phase>("idle");
   const [elapsedMs, setElapsedMs] = useState(0);
-  const [levels, setLevels] = useState<number[]>(() => Array(BARS).fill(0));
+  const [bands, setBands] = useState<[number, number, number, number]>([0.1, 0.25, 0.2, 0.1]);
   const [mics, setMics] = useState<MediaDeviceInfo[]>([]);
   const [micId, setMicId] = useState("auto");
-  const [language, setLanguage] = useState("auto");
-  const [speakers, setSpeakers] = useState(false);
+  const [languagePreference, setLanguage] = useState<string | null>(null);
+  const [speakerPreference, setSpeakers] = useState<boolean | null>(null);
+  const [switchingMic, setSwitchingMic] = useState(false);
+  const [sharingPending, setSharingPending] = useState(false);
+  const [spinning, setSpinning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
   const [failed, setFailed] = useState<{ segments: SegmentInfo[]; session: JournalSession } | null>(null);
   const [appendNote, setAppendNote] = useState<Note | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
 
+  const language = languagePreference ?? (appendTo ? appendNote?.language : status?.settings.defaultLanguage) ?? "auto";
+  const speakers = speakerPreference ?? (appendTo ? Boolean(appendNote?.speakers) : mode === "meeting" && Boolean(status?.speakersAvailable));
   const sourceRef = useRef<AudioSource | null>(null);
   const recorderRef = useRef<SegmentedRecorder | null>(null);
   const sessionRef = useRef<JournalSession | null>(null);
+  const sessionSettingsRef = useRef({ language, speakers });
   const frameRef = useRef<number | null>(null);
   const stoppingRef = useRef(false);
+  const autoTriedRef = useRef(false);
   const wakeLockRef = useRef<{ release: () => Promise<void> } | null>(null);
   const stopRef = useRef<(notice?: string) => Promise<void>>(async () => {});
 
-  const busy = phase === "starting" || phase === "recording" || phase === "paused" || phase === "stopping" || phase === "uploading";
   const live = phase === "recording" || phase === "paused";
+  const controlsLocked = phase !== "idle" && !live;
+  const modeLocked = sharingPending || (controlsLocked && !(phase === "starting" && mode === "voice"));
 
   useEffect(() => {
     try {
@@ -70,19 +80,17 @@ export function RecorderView() {
     }
   }, []);
   useEffect(() => {
-    if (status && !appendTo) {
-      setLanguage(status.settings.defaultLanguage || "auto");
-      if (mode === "meeting") setSpeakers(status.speakersAvailable);
-    }
-  }, [status, appendTo, mode]);
+    sessionSettingsRef.current = { language, speakers };
+    const session = sessionRef.current;
+    if (!session || !recorderRef.current || stoppingRef.current) return;
+    session.language = language;
+    session.speakers = speakers;
+    void saveSession(session).catch(() => undefined);
+  }, [language, speakers]);
   useEffect(() => {
     if (!appendTo) return;
     api<{ note: Note }>(`/api/notes/${appendTo}`)
-      .then(({ note }) => {
-        setAppendNote(note);
-        setLanguage(note.language || "auto");
-        setSpeakers(note.speakers);
-      })
+      .then(({ note }) => setAppendNote(note))
       .catch(() => setError("We couldn't find the note you want to add to."));
   }, [appendTo]);
 
@@ -113,17 +121,18 @@ export function RecorderView() {
   const startMeters = useCallback(() => {
     const analyser = sourceRef.current?.analyser;
     if (!analyser) return;
-    const buffer = new Uint8Array(new ArrayBuffer(analyser.fftSize));
+    const freqBuffer = new Uint8Array(new ArrayBuffer(analyser.frequencyBinCount));
     let lastBar = 0;
     let lastBeat = 0;
     const tick = (now: number) => {
       const recorder = recorderRef.current;
       if (!recorder) return;
-      setElapsedMs(recorder.elapsedMs);
-      if (now - lastBar > 70) {
+      if (now - lastBar > 90) {
         lastBar = now;
-        const level = recorder.state === "recording" ? readLevel(analyser, buffer) : 0;
-        setLevels((previous) => [...previous.slice(1), level]);
+        setElapsedMs(recorder.elapsedMs);
+        if (recorder.state === "recording") {
+          setBands(readFourBands(analyser, freqBuffer));
+        }
       }
       if (now - lastBeat > 5000 && sessionRef.current) {
         lastBeat = now;
@@ -140,6 +149,7 @@ export function RecorderView() {
       setPhase("uploading");
       setProgress(0);
       setError(null);
+      const journalSaved = saveSession(session).catch(() => undefined);
       try {
         const extension = extensionForType(session.mimeType);
         const result = await uploadAudioNote({
@@ -154,10 +164,12 @@ export function RecorderView() {
           })),
           onProgress: setProgress,
         });
+        await journalSaved;
         await deleteSession(session.id).catch(() => undefined);
         if (result.transcribeError) toast(result.transcribeError, "error");
         router.push(`/notes/${result.noteId}`);
       } catch (uploadError) {
+        await journalSaved;
         setFailed({ segments, session });
         setPhase("failed");
         setError(`${errorMessage(uploadError)} Your recording is safely saved here so you can try again.`);
@@ -169,17 +181,19 @@ export function RecorderView() {
   const stop = useCallback(
     async (notice?: string) => {
       const recorder = recorderRef.current;
-      if (!recorder || stoppingRef.current) return;
+      const session = sessionRef.current;
+      if (!recorder || !session || stoppingRef.current) return;
       stoppingRef.current = true;
       setPhase("stopping");
       stopMeters();
-      const segments = await recorder.stop();
+      const finished = recorder.stop();
+      sourceRef.current?.stopSharing();
+      setSharingPending(false);
+      const segments = await finished;
       recorderRef.current = null;
       releaseHardware();
       if (notice) toast(notice, "info");
-      const session = sessionRef.current!;
       session.activeMs = segments.reduce((sum, segment) => sum + segment.durationMs, 0);
-      await saveSession(session).catch(() => undefined);
       stoppingRef.current = false;
       if (segments.length === 0) {
         setPhase("idle");
@@ -193,29 +207,44 @@ export function RecorderView() {
   );
   stopRef.current = stop;
 
-  const start = useCallback(async () => {
+  const start = useCallback(async (existingSource?: AudioSource) => {
+    if (recorderRef.current || stoppingRef.current || (sourceRef.current && !existingSource)) return;
+    autoTriedRef.current = true;
     setError(null);
     setFailed(null);
     setPhase("starting");
     setElapsedMs(0);
-    setLevels(Array(BARS).fill(0));
+    setBands([0.1, 0.25, 0.2, 0.1]);
+    let source = existingSource;
     try {
-      const source = await openAudioSource({
-        deviceId: micId,
-        meeting: mode === "meeting",
-        onDisplayEnded: () => void stopRef.current("Screen sharing ended, so we wrapped up your recording."),
-      });
-      sourceRef.current = source;
-      void refreshMics();
+      if (!source) {
+        source = openAudioSource({
+          deviceId: micId,
+          meeting: mode === "meeting",
+          onDisplayEnded: () => {
+            if (recorderRef.current) {
+              void stopRef.current("Screen sharing ended. Saving your recording.");
+            } else {
+              releaseHardware();
+              setSharingPending(false);
+              setPhase("idle");
+              setError("Screen sharing ended before recording started. Try sharing again.");
+            }
+          },
+        });
+        sourceRef.current = source;
+        await source.ready;
+        if (sourceRef.current !== source) return;
+        void refreshMics();
+      }
       const session: JournalSession = {
         id: crypto.randomUUID(),
         startedAt: Date.now(),
         updatedAt: Date.now(),
         mimeType: "audio/webm",
-        source: mode === "meeting" ? "meeting" : "recording",
+        source: source.sharing ? "meeting" : "recording",
         appendTo,
-        language,
-        speakers,
+        ...sessionSettingsRef.current,
         segments: {},
         activeMs: 0,
       };
@@ -246,22 +275,91 @@ export function RecorderView() {
       recorderRef.current = recorder;
       recorder.start();
       session.mimeType = recorder.mimeType;
-      await saveSession(session).catch(() => undefined);
-      try {
-        const nav = navigator as Navigator & { wakeLock?: { request: (type: "screen") => Promise<{ release: () => Promise<void> }> } };
-        wakeLockRef.current = (await nav.wakeLock?.request("screen")) ?? null;
-      } catch {
-        // Wake lock is optional.
-      }
+      void saveSession(session).catch(() => undefined);
       setPhase("recording");
       startMeters();
+      if (!existingSource) {
+        void navigator.wakeLock?.request("screen").then((lock) => {
+          if (sourceRef.current === source && !stoppingRef.current) wakeLockRef.current = lock;
+          else return lock.release();
+        }).catch(() => undefined);
+      }
     } catch (startError) {
+      if (source && sourceRef.current !== source) return;
       releaseHardware();
       recorderRef.current = null;
       setPhase("idle");
       setError(errorMessage(startError));
     }
-  }, [appendTo, language, maxSec, micId, mode, refreshMics, releaseHardware, speakers, startMeters, status]);
+  }, [appendTo, maxSec, micId, mode, refreshMics, releaseHardware, startMeters, status]);
+
+  // If mic permission is already granted in voice mode, start right away like Letterly,
+  // unless opened for recovery or an unsaved recording is already waiting to be recovered.
+  useEffect(() => {
+    if (autoTriedRef.current || mode !== "voice" || phase !== "idle" || recoverMode) return;
+    let cancelled = false;
+    Promise.all([
+      navigator.permissions?.query({ name: "microphone" as PermissionName }).catch(() => null),
+      listSessions(),
+    ])
+      .then(([res, sessions]) => {
+        if (cancelled || autoTriedRef.current) return;
+        autoTriedRef.current = true;
+        if (sessions.some((s) => isRecoverableSession(s))) return;
+        if (res?.state === "granted") void start();
+      })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [mode, phase, recoverMode, start]);
+
+  async function changeMode(nextMode: Mode) {
+    if (nextMode === mode || modeLocked || stoppingRef.current) return;
+    autoTriedRef.current = true;
+    setError(null);
+    const source = sourceRef.current;
+    if (source && nextMode === "meeting") {
+      setSharingPending(true);
+      try {
+        if (!(await source.startSharing()) || sourceRef.current !== source || stoppingRef.current) return;
+      } catch (shareError) {
+        if (sourceRef.current === source && !stoppingRef.current) setError(errorMessage(shareError));
+        return;
+      } finally {
+        setSharingPending(false);
+      }
+      const session = sessionRef.current;
+      if (session && recorderRef.current) {
+        session.source = "meeting";
+        void saveSession(session).catch(() => undefined);
+      }
+    } else if (source) {
+      source.stopSharing();
+    }
+    setMode(nextMode);
+  }
+
+  async function changeMicrophone(deviceId: string) {
+    const source = sourceRef.current;
+    if (source) {
+      setSwitchingMic(true);
+      setError(null);
+      try {
+        await source.setMicrophone(deviceId);
+        if (sourceRef.current !== source || stoppingRef.current) return;
+      } catch (micError) {
+        if (sourceRef.current === source && !stoppingRef.current) setError(errorMessage(micError));
+        return;
+      } finally {
+        setSwitchingMic(false);
+      }
+    }
+    setMicId(deviceId);
+    try {
+      localStorage.setItem(MIC_KEY, deviceId);
+    } catch {
+      // Optional.
+    }
+  }
 
   function togglePause() {
     const recorder = recorderRef.current;
@@ -277,6 +375,8 @@ export function RecorderView() {
   }
 
   async function restart() {
+    setSpinning(true);
+    setTimeout(() => setSpinning(false), 260);
     const recorder = recorderRef.current;
     if (!recorder) return;
     if (recorder.elapsedMs > 10_000) {
@@ -288,14 +388,15 @@ export function RecorderView() {
         tone: "danger",
         icon: RotateCcw,
       });
-      // The recording keeps running behind the dialog, so make sure it is still the one we asked about.
-      if (!confirmed || recorderRef.current !== recorder || stoppingRef.current) return;
+      if (!confirmed) return;
     }
+    const source = sourceRef.current;
+    if (!source || recorderRef.current !== recorder || stoppingRef.current) return;
     recorder.discard();
     recorderRef.current = null;
-    releaseHardware();
-    if (sessionRef.current) await deleteSession(sessionRef.current.id).catch(() => undefined);
-    await start();
+    stopMeters();
+    if (sessionRef.current) void deleteSession(sessionRef.current.id).catch(() => undefined);
+    await start(source);
   }
 
   useEffect(() => {
@@ -317,90 +418,91 @@ export function RecorderView() {
   }, [releaseHardware]);
 
   const remainingSec = Math.max(0, maxSec - elapsedMs / 1000);
-  const statusLine = {
-    idle: mode === "meeting" ? "Ready to record your meeting" : "Ready to record",
-    starting: mode === "meeting" ? "Pick the tab or window with meeting audio…" : "Connecting to microphone…",
-    recording: "Listening",
-    paused: "Paused",
-    stopping: "Wrapping up…",
-    uploading: "Saving recording…",
-    failed: "Couldn't save recording",
-  }[phase];
   const backHref = appendTo ? `/notes/${appendTo}` : "/";
+  const autoMicLabel = mics[0]?.label ? `Auto-detect (${mics[0].label})` : "Auto-detect";
 
   return (
-    <div className="mx-auto flex min-h-screen max-w-2xl flex-col px-5 py-4 sm:px-6">
-      <div className="flex items-center justify-between gap-2 pt-1">
-        <Link
-          href={backHref}
-          onClick={(event) => {
-            // Opening in a new tab leaves this page alone, so there is nothing to confirm.
-            if (!live || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
-            // The answer arrives later, so hold the navigation now and perform it ourselves.
-            event.preventDefault();
-            void askConfirm({
-              title: "Stop recording?",
-              message: "Your audio is saved, so you can recover it anytime.",
-              confirmLabel: "Stop & go back",
-              cancelLabel: "Keep recording",
-              icon: Square,
-            }).then((confirmed) => {
-              if (confirmed) router.push(backHref);
-            });
-          }}
-          className="frosted-topbar inline-flex h-11 items-center gap-1.5 rounded-full px-4 text-sm font-semibold text-[var(--ink)] transition-opacity hover:opacity-65"
-        >
-          <ArrowLeft className="h-4 w-4" /> Back
-        </Link>
-
-        <div role="tablist" aria-label="Recording mode" className="frosted-topbar inline-flex rounded-full p-1">
-          {(
-            [
-              ["voice", "Voice note", Mic],
-              ["meeting", "Meeting", MonitorSpeaker],
-            ] as const
-          ).map(([value, label, Icon]) => {
-            const selected = mode === value;
-            return (
-              <button
-                key={value}
-                type="button"
-                role="tab"
-                aria-selected={selected}
-                disabled={busy}
-                onClick={() => {
-                  setMode(value);
-                  if (value === "meeting" && status?.speakersAvailable) setSpeakers(true);
-                }}
-                className={`relative inline-flex cursor-pointer items-center gap-1.5 rounded-full px-3.5 py-1.5 text-sm font-semibold transition-colors duration-150 disabled:cursor-not-allowed ${
-                  selected ? "text-[var(--accent-ink)]" : "text-[var(--ink-subtle)] hover:text-[var(--ink)]"
-                }`}
-              >
-                {selected && (
-                  <motion.span
-                    layoutId="record-mode-pill"
-                    transition={SPRING_SNAPPY}
-                    aria-hidden="true"
-                    className="absolute inset-0 rounded-full bg-[var(--accent)] shadow-xs"
-                  />
-                )}
-                <span className="relative z-10 inline-flex items-center gap-1.5">
-                  <Icon className="h-3.5 w-3.5" /> {label}
-                </span>
-              </button>
-            );
-          })}
+    <div className="flex min-h-screen w-full flex-col bg-[var(--canvas)]">
+      <header className="sticky top-0 z-20 grid min-h-[3.875rem] w-full grid-cols-3 items-center border-b border-[var(--border)]/70 bg-[var(--canvas)]/90 px-5 backdrop-blur-md">
+        <div className="flex items-center">
+          <Link
+            href={backHref}
+            aria-label="Back"
+            onClick={(event) => {
+              if (!live || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
+              event.preventDefault();
+              void askConfirm({
+                title: "Stop recording?",
+                message: "Your audio is saved, so you can recover it anytime.",
+                confirmLabel: "Stop & go back",
+                cancelLabel: "Keep recording",
+                icon: Square,
+              }).then(async (confirmed) => {
+                if (!confirmed) return;
+                const recorder = recorderRef.current;
+                if (recorder && recorder.elapsedMs < 1500) {
+                  recorder.discard();
+                  recorderRef.current = null;
+                  releaseHardware();
+                  if (sessionRef.current) await deleteSession(sessionRef.current.id).catch(() => undefined);
+                }
+                router.push(backHref);
+              });
+            }}
+            className="flex h-9 w-9 items-center justify-center rounded-full text-[var(--ink)] transition-opacity hover:opacity-65"
+          >
+            <BackArrowIcon className="h-5 w-5" />
+          </Link>
         </div>
-      </div>
+
+        <div className="flex justify-center">
+          <span
+            aria-label="Remaining recording time"
+            className="inline-flex items-center rounded-full bg-[var(--surface-panel)] px-3.5 py-1 text-sm font-semibold tabular-nums text-[var(--brand)]"
+          >
+            {phase === "stopping" || phase === "uploading" ? "Saving…" : formatCountdown(remainingSec)}
+          </span>
+        </div>
+
+        <div className="flex justify-end">
+          <div role="tablist" aria-label="Recording mode" className="inline-flex rounded-full bg-[var(--surface-panel)] p-0.5">
+            {(
+              [
+                ["voice", "Voice", Mic],
+                ["meeting", "Meeting", MonitorSpeaker],
+              ] as const
+            ).map(([value, label, Icon]) => {
+              const selected = mode === value;
+              return (
+                <button
+                  key={value}
+                  type="button"
+                  role="tab"
+                  aria-selected={selected}
+                  aria-label={label}
+                  disabled={modeLocked}
+                  onClick={() => void changeMode(value)}
+                  className={`inline-flex cursor-pointer items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-[var(--brand)] disabled:cursor-not-allowed ${
+                    selected ? "bg-[var(--cta-bg)] text-[var(--cta-ink)]" : "text-[var(--ink-subtle)] hover:text-[var(--ink)]"
+                  }`}
+                >
+                  <Icon className="h-3 w-3" />
+                  <span className="hidden sm:inline">{label}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </header>
 
       <motion.main
         initial={{ opacity: 0, y: 10 }}
         animate={{ opacity: 1, y: 0 }}
         transition={SPRING_SMOOTH}
-        className="flex flex-1 flex-col items-center justify-center py-8 text-center"
+        className="mx-auto flex w-full max-w-2xl flex-1 flex-col items-center justify-center px-5 py-8 text-center"
       >
         {appendNote && (
-          <p className="mb-4 rounded-full border border-[var(--border)] bg-[var(--surface)] px-4 py-1.5 text-sm text-[var(--ink-muted)]">
+          <p className="mb-4 rounded-full border border-[var(--border)] bg-[var(--surface-panel)] px-4 py-1 text-xs font-medium text-[var(--ink-subtle)]">
             Adding to <span className="font-semibold text-[var(--ink)]">{appendNote.title || "Untitled note"}</span>
           </p>
         )}
@@ -410,49 +512,54 @@ export function RecorderView() {
           </div>
         )}
 
-        <div className="flex min-h-5 items-center text-sm font-medium text-[var(--ink-muted)]" aria-live="polite">
-          <AnimatePresence mode="wait" initial={false}>
-            <motion.p
-              key={`${phase}-${mode}`}
-              initial={{ opacity: 0, y: 4 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -4 }}
-              transition={{ duration: 0.16, ease: EASE_OUT }}
-              className="flex items-center gap-2"
-            >
-              {phase === "recording" && <span className="pulse-dot h-2 w-2 rounded-full bg-[var(--record-live)]" />}
-              {statusLine}
-            </motion.p>
-          </AnimatePresence>
+        <div
+          aria-hidden="true"
+          className="flex h-[15rem] items-center justify-center gap-1.5 sm:gap-2"
+        >
+          {bands.map((level, index) => {
+            const weight = BELL_WEIGHTS[index];
+            const baseHeight = phase === "recording" ? 82.5 + level * 150 * weight : 82.5 * (0.85 + 0.15 * weight);
+            return (
+              <div
+                key={index}
+                className={`w-[4rem] min-h-[4rem] rounded-full transition-[height,opacity] duration-[200ms] ease-out sm:w-[5.15625rem] sm:min-h-[5.15625rem] ${
+                  phase === "paused" ? "bg-[var(--ink)]/55" : "bg-[var(--ink)]"
+                }`}
+                style={{ height: `${Math.round(baseHeight)}px` }}
+              />
+            );
+          })}
         </div>
-        <div className="mt-2 text-6xl font-semibold tracking-tight tabular-nums text-[var(--ink)]" aria-label="Recording time">
-          {formatDuration(elapsedMs / 1000)}
-        </div>
-        <p className="mt-1.5 text-xs text-[var(--ink-muted)]">
-          {live ? `${formatDuration(remainingSec)} remaining` : `Up to ${Math.round(maxSec / 3600)} hours per note`}
-        </p>
 
-        <div className="mt-8 flex h-24 w-full max-w-lg items-center justify-center gap-[3px]" aria-hidden="true">
-          {levels.map((level, index) => (
-            <span
-              key={index}
-              className={`w-[5px] rounded-full transition-[height,background-color] duration-75 ${
-                phase === "recording" ? "bg-[var(--record-live)]" : "bg-[var(--border)]"
-              }`}
-              style={{ height: `${Math.max(6, Math.round(level * 92))}px`, opacity: 0.35 + (index / BARS) * 0.65 }}
-            />
-          ))}
-        </div>
+        {(!live || sharingPending) && (
+          <p className="mt-4 text-xs font-medium text-[var(--ink-muted)]" aria-live="polite">
+            {sharingPending || (phase === "starting" && mode === "meeting")
+              ? "Pick the tab or window with meeting audio…"
+              : phase === "starting"
+                ? "Connecting microphone…"
+                : phase === "stopping"
+                  ? "Preparing audio…"
+                  : phase === "uploading"
+                    ? progress >= 0.75
+                      ? "Transcribing…"
+                      : "Uploading recording…"
+                    : mode === "meeting"
+                      ? "Tap record to capture your mic and meeting audio"
+                      : "Tap the red button to start recording"}
+          </p>
+        )}
 
         {phase === "uploading" && (
-          <div className="mt-6 w-full max-w-sm space-y-2">
+          <div className="mt-4 w-full max-w-sm space-y-2">
             <ProgressBar value={progress} label="Saving progress" />
-            <p className="text-xs text-[var(--ink-muted)]">{Math.round(progress * 100)}% saved</p>
+            <p className="text-xs text-[var(--ink-muted)]">
+              {progress >= 0.75 ? "Finishing transcript…" : `${Math.round(progress * 100)}% saved`}
+            </p>
           </div>
         )}
 
         {error && (
-          <div role="alert" className="alert alert-error mt-6 w-full max-w-md text-left">
+          <div role="alert" className="alert alert-error mt-5 w-full max-w-md text-left">
             {error}
           </div>
         )}
@@ -496,81 +603,74 @@ export function RecorderView() {
           </div>
         )}
 
-        <Accordion open={!busy && phase !== "failed"} className="w-full max-w-md">
-          <div className="grid gap-3 pt-8 text-left sm:grid-cols-2">
-            <label className="surface-card flex flex-col gap-1 rounded-2xl px-4 py-3 text-xs font-medium text-[var(--ink-muted)]">
-              Microphone
-              <select
-                value={micId}
-                onChange={(event) => {
-                  setMicId(event.target.value);
-                  try {
-                    localStorage.setItem(MIC_KEY, event.target.value);
-                  } catch {
-                    // ignore
-                  }
-                }}
-                className="cursor-pointer bg-transparent text-sm font-semibold text-[var(--ink)] outline-none"
-              >
-                <option value="auto">Default microphone</option>
-                {mics.map((mic, index) => (
-                  <option key={mic.deviceId} value={mic.deviceId}>
-                    {mic.label || `Microphone ${index + 1}`}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="surface-card flex flex-col gap-1 rounded-2xl px-4 py-3 text-xs font-medium text-[var(--ink-muted)]">
-              Speaker&apos;s language
-              <select
-                value={language}
-                onChange={(event) => setLanguage(event.target.value)}
-                className="cursor-pointer bg-transparent text-sm font-semibold text-[var(--ink)] outline-none"
-              >
-                <option value="auto">Auto-detect</option>
-                {LANGUAGES.map((item) => (
-                  <option key={item.code} value={item.code}>
-                    {item.name} · {item.native}
-                  </option>
-                ))}
-              </select>
-            </label>
+        <div className="mt-8 flex flex-col items-center gap-3">
+          <div className="relative inline-flex max-w-[min(28rem,calc(100vw-2.5rem))] items-center rounded-full bg-[var(--surface-panel)]">
+            <select
+              aria-label="Microphone"
+              disabled={controlsLocked || switchingMic}
+              value={micId}
+              onChange={(event) => void changeMicrophone(event.target.value)}
+              className="w-full cursor-pointer appearance-none truncate rounded-full bg-transparent py-2 pl-4 pr-9 text-xs font-medium text-[var(--ink)] outline-none focus-visible:outline-2 focus-visible:outline-[var(--brand)] disabled:cursor-not-allowed sm:text-[0.8125rem]"
+            >
+              <option value="auto">{autoMicLabel}</option>
+              {mics.map((mic, index) => (
+                <option key={mic.deviceId} value={mic.deviceId}>
+                  {mic.label || `Microphone ${index + 1}`}
+                </option>
+              ))}
+            </select>
+            <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--ink-subtle)]" />
+          </div>
+
+          <div className="flex flex-wrap items-center justify-center gap-2.5">
             {status?.speakersAvailable && (
-              <div className="surface-card rounded-2xl px-4 py-3 sm:col-span-2">
-                <Switch
-                  checked={speakers}
-                  onChange={setSpeakers}
-                  label="Multi-speaker"
-                  description="Label who said what (Speaker A, Speaker B…). Best for meetings and interviews."
-                />
+              <div className="inline-flex items-center gap-3 rounded-full bg-[var(--surface-panel)] py-1.5 pl-4 pr-2">
+                <span className="inline-flex items-center gap-1.5 text-[0.8125rem] font-medium text-[var(--ink)]">
+                  <Users className="h-3.5 w-3.5 text-[var(--ink-subtle)]" /> Multi-speaker
+                </span>
+                <Switch checked={speakers} disabled={controlsLocked} onChange={setSpeakers} label="Multi-speaker" hideLabel />
               </div>
             )}
-            <Accordion open={mode === "meeting"} className="sm:col-span-2">
-              <p className="flex gap-2 px-1 text-xs text-[var(--ink-muted)]">
-                <Users className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                Captures both your voice and your meeting window audio. Headphones work best to prevent echo.
-              </p>
-            </Accordion>
-          </div>
-        </Accordion>
 
-        <div className="mt-10 flex items-center justify-center gap-6">
+            <div className="relative inline-flex items-center rounded-full bg-[var(--surface-panel)]">
+              <select
+                aria-label="Speaker language"
+                disabled={controlsLocked}
+                value={language}
+                onChange={(event) => setLanguage(event.target.value)}
+                className="cursor-pointer appearance-none rounded-full bg-transparent py-2 pl-3.5 pr-8 text-xs font-medium text-[var(--ink-subtle)] outline-none focus-visible:outline-2 focus-visible:outline-[var(--brand)] disabled:cursor-not-allowed"
+              >
+                <option value="auto">Lang: Auto</option>
+                {LANGUAGES.map((item) => (
+                  <option key={item.code} value={item.code}>
+                    {item.name}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--ink-muted)]" />
+            </div>
+          </div>
+        </div>
+      </motion.main>
+
+      <footer className="pb-10 pt-2">
+        <div className="flex items-center justify-center gap-10">
           <AnimatePresence mode="popLayout" initial={false}>
             {live && (
               <motion.button
                 key="restart"
                 type="button"
-                initial={{ opacity: 0, scale: 0.72, x: 16 }}
+                initial={{ opacity: 0, scale: 0.72, x: 14 }}
                 animate={{ opacity: 1, scale: 1, x: 0 }}
-                exit={{ opacity: 0, scale: 0.72, x: 16 }}
+                exit={{ opacity: 0, scale: 0.72, x: 14 }}
                 whileTap={TAP_ICON}
                 transition={SPRING_SNAPPY}
                 onClick={() => void restart()}
                 aria-label="Restart recording"
                 title="Restart"
-                className="surface-card flex h-14 w-14 cursor-pointer items-center justify-center rounded-full text-[var(--ink-subtle)] transition-colors hover:text-[var(--ink)]"
+                className="flex h-[3.375rem] w-[3.375rem] cursor-pointer items-center justify-center rounded-full text-[var(--ink)] transition-opacity hover:opacity-65"
               >
-                <RotateCcw className="h-5 w-5" />
+                <RestartLoopIcon className={`h-6 w-6 ${spinning ? "spin-once" : ""}`} />
               </motion.button>
             )}
 
@@ -587,20 +687,9 @@ export function RecorderView() {
                 onClick={() => void start()}
                 disabled={phase === "failed"}
                 aria-label={mode === "meeting" ? "Start recording meeting" : "Start recording"}
-                className="flex h-20 w-20 cursor-pointer items-center justify-center rounded-full bg-[var(--accent)] text-[var(--accent-ink)] shadow-[var(--shadow-float)] disabled:cursor-not-allowed disabled:opacity-40"
+                className="cursor-pointer rounded-full text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-40"
               >
-                <AnimatePresence mode="wait" initial={false}>
-                  <motion.span
-                    key={mode}
-                    initial={{ scale: 0.75, opacity: 0 }}
-                    animate={{ scale: 1, opacity: 1 }}
-                    exit={{ scale: 0.75, opacity: 0 }}
-                    transition={{ duration: 0.14, ease: EASE_OUT }}
-                    className="inline-flex"
-                  >
-                    {mode === "meeting" ? <MonitorSpeaker className="h-8 w-8" /> : <CuteMicIcon className="h-11 w-11" />}
-                  </motion.span>
-                </AnimatePresence>
+                <RecordStartRingIcon className="h-[3.75rem] w-[3.75rem]" />
               </motion.button>
             ) : live ? (
               <motion.button
@@ -615,9 +704,9 @@ export function RecorderView() {
                 onClick={() => void stop()}
                 aria-label="Stop and transcribe"
                 title="Stop & save note"
-                className="flex h-20 w-20 cursor-pointer items-center justify-center rounded-full bg-[var(--record-live)] text-white shadow-[var(--shadow-float)] ring-8 ring-[var(--record-live)]/20"
+                className="cursor-pointer rounded-full text-[var(--ink)]"
               >
-                <Square className="h-7 w-7 fill-current" />
+                <StopSquareRingIcon className="h-[3.75rem] w-[3.75rem]" />
               </motion.button>
             ) : (
               <motion.div
@@ -626,9 +715,9 @@ export function RecorderView() {
                 animate={{ opacity: 1, scale: 1 }}
                 exit={{ opacity: 0.5, scale: 0.9 }}
                 transition={SPRING_SNAPPY}
-                className="flex h-20 w-20 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface)] text-[var(--ink-muted)]"
+                className="flex h-[3.75rem] w-[3.75rem] items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface-panel)] text-[var(--ink-muted)]"
               >
-                <Spinner className="h-8 w-8" />
+                <Spinner className="h-7 w-7" />
               </motion.div>
             )}
 
@@ -636,25 +725,33 @@ export function RecorderView() {
               <motion.button
                 key="pause"
                 type="button"
-                initial={{ opacity: 0, scale: 0.72, x: -16 }}
+                initial={{ opacity: 0, scale: 0.72, x: -14 }}
                 animate={{ opacity: 1, scale: 1, x: 0 }}
-                exit={{ opacity: 0, scale: 0.72, x: -16 }}
+                exit={{ opacity: 0, scale: 0.72, x: -14 }}
                 whileTap={TAP_ICON}
                 transition={SPRING_SNAPPY}
                 onClick={togglePause}
                 aria-label={phase === "paused" ? "Resume recording" : "Pause recording"}
                 title={phase === "paused" ? "Resume" : "Pause"}
-                className="surface-card flex h-14 w-14 cursor-pointer items-center justify-center rounded-full text-[var(--ink)] transition-colors hover:bg-[var(--surface-subtle)]"
+                className="flex h-[3.375rem] w-[3.375rem] cursor-pointer items-center justify-center rounded-full text-[var(--ink)] transition-opacity hover:opacity-65"
               >
-                {phase === "paused" ? <Play className="ml-0.5 h-5 w-5" /> : <Pause className="h-5 w-5" />}
+                <AnimatePresence mode="wait" initial={false}>
+                  <motion.span
+                    key={phase}
+                    initial={{ scale: 0.75, opacity: 0 }}
+                    animate={{ scale: 1, opacity: 1 }}
+                    exit={{ scale: 0.75, opacity: 0 }}
+                    transition={{ duration: 0.14, ease: EASE_OUT }}
+                    className="inline-flex"
+                  >
+                    {phase === "paused" ? <PlayTriangleIcon className="ml-0.5 h-5 w-5" /> : <PauseBarsIcon className="h-5 w-5" />}
+                  </motion.span>
+                </AnimatePresence>
               </motion.button>
             )}
           </AnimatePresence>
         </div>
-        <Accordion open={live}>
-          <p className="pt-5 text-xs text-[var(--ink-muted)]">Tap Stop when you&apos;re finished — your transcript starts right away.</p>
-        </Accordion>
-      </motion.main>
+      </footer>
     </div>
   );
 }

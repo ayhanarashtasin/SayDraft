@@ -6,6 +6,9 @@ import { MotionConfig } from "motion/react";
 /** Crisp critically-damped ease curve (fast response, smooth settle, zero bounce). */
 export const EASE_OUT = [0.22, 1, 0.36, 1] as const;
 
+/** Standard UI cubic-bezier matching Tailwind ease-in-out. */
+export const EASE_TAILWIND = [0.4, 0, 0.2, 1] as const;
+
 /** Snappy critically-damped spring for switches, segmented pills, tabs, and checkboxes. */
 export const SPRING_SNAPPY = {
   type: "spring",
@@ -20,6 +23,20 @@ export const SPRING_SMOOTH = {
   stiffness: 400,
   damping: 36,
   mass: 0.85,
+} as const;
+
+/** Smooth 250ms transition for right-hand sidebars (Rewrite / Translate). */
+export const SIDE_PANEL_TRANSITION = {
+  duration: 0.25,
+  ease: EASE_TAILWIND,
+} as const;
+
+/** Crisp frosted menu popover reveal. */
+export const POPOVER_MOTION = {
+  initial: { opacity: 0, scale: 0.96, y: 6 },
+  animate: { opacity: 1, scale: 1, y: 0 },
+  exit: { opacity: 0, scale: 0.96, y: 4 },
+  transition: { duration: 0.16, ease: EASE_OUT },
 } as const;
 
 /** Subtle tactile press feedback for primary buttons and cards. */
