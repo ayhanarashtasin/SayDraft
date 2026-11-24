@@ -57,7 +57,7 @@ export function NoteCard({ note, sortBy, selectionOrder = null, selecting, onTog
             onToggleSelect();
           }
         }}
-        className={`flex h-[14.5rem] flex-col overflow-hidden rounded-[1.75rem] bg-[var(--surface)] p-6 transition-[background-color,border-color,box-shadow,transform] duration-150 ease-[var(--ease-in-out)] hover:bg-[var(--surface-hover)]/45 active:scale-[0.992] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)] ${
+        className={`flex h-[14.5rem] flex-col overflow-hidden rounded-[1.75rem] bg-[var(--surface)]/92 p-6 shadow-[0_2px_16px_rgba(1,5,15,0.06)] backdrop-blur-md transition-[background-color,border-color,box-shadow,transform] duration-150 ease-[var(--ease-in-out)] hover:bg-[var(--surface-hover)]/95 active:scale-[0.992] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)] dark:shadow-[0_4px_20px_rgba(0,0,0,0.28)] ${
           selected
             ? "border-[1.5px] border-[var(--brand)] ring-1 ring-[var(--brand)]"
             : "border border-[var(--border)] hover:border-[var(--border-strong)]"

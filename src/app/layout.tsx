@@ -10,7 +10,20 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "Saydraft",
   description: "Record voice notes, get accurate transcripts, and rewrite them cleanly into notes, summaries, and messages.",
-  icons: { icon: "/favicon.svg" },
+  manifest: "/manifest.webmanifest",
+  icons: {
+    icon: [
+      { url: "/favicon.svg", type: "image/svg+xml" },
+      { url: "/icons/icon-192.png", sizes: "192x192", type: "image/png" },
+    ],
+    shortcut: "/favicon.svg",
+    apple: [{ url: "/apple-touch-icon.png", sizes: "180x180", type: "image/png" }],
+  },
+  appleWebApp: {
+    capable: true,
+    title: "Saydraft",
+    statusBarStyle: "black-translucent",
+  },
 };
 
 export const viewport: Viewport = {

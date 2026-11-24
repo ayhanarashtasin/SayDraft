@@ -417,18 +417,52 @@
   }
   .alert-error {
     border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
-    background: color-mix(in srgb, var(--danger) 10%, transparent);
+    background: color-mix(in srgb, var(--danger) 12%, var(--surface));
     color: var(--danger);
   }
   .alert-warning {
     border: 1px solid color-mix(in srgb, var(--warning) 35%, transparent);
-    background: color-mix(in srgb, var(--warning) 10%, transparent);
+    background: color-mix(in srgb, var(--warning) 12%, var(--surface));
     color: var(--ink);
   }
   .alert-info {
     border: 1px solid var(--border);
     background: var(--surface);
     color: var(--ink);
+  }
+
+  .dashboard-scrim {
+    transition: background 220ms var(--ease-out-expo);
+  }
+  .dashboard-scrim-light {
+    background: linear-gradient(180deg, rgba(252, 237, 244, 0.36) 0%, rgba(252, 237, 244, 0.2) 50%, rgba(252, 237, 244, 0.3) 100%);
+  }
+  .dashboard-scrim-horizon {
+    background: linear-gradient(180deg, rgba(252, 237, 244, 0.26) 0%, rgba(252, 237, 244, 0.22) 48%, rgba(252, 237, 244, 0.44) 100%);
+  }
+  .dashboard-scrim-halo {
+    background: linear-gradient(180deg, rgba(252, 237, 244, 0.38) 0%, rgba(252, 237, 244, 0.64) 48%, rgba(252, 237, 244, 0.72) 100%);
+  }
+  .dashboard-scrim-dark {
+    background: linear-gradient(180deg, rgba(252, 237, 244, 0.76) 0%, rgba(252, 237, 244, 0.64) 55%, rgba(252, 237, 244, 0.68) 100%);
+  }
+  .dark .dashboard-scrim-light {
+    background: linear-gradient(180deg, rgba(17, 16, 34, 0.8) 0%, rgba(17, 16, 34, 0.72) 55%, rgba(17, 16, 34, 0.78) 100%);
+  }
+  .dark .dashboard-scrim-horizon {
+    background: linear-gradient(180deg, rgba(17, 16, 34, 0.82) 0%, rgba(17, 16, 34, 0.74) 48%, rgba(17, 16, 34, 0.44) 100%);
+  }
+  .dark .dashboard-scrim-halo {
+    background: linear-gradient(180deg, rgba(17, 16, 34, 0.74) 0%, rgba(17, 16, 34, 0.56) 40%, rgba(17, 16, 34, 0.28) 100%);
+  }
+  .dark .dashboard-scrim-dark {
+    background: linear-gradient(180deg, rgba(17, 16, 34, 0.42) 0%, rgba(17, 16, 34, 0.26) 50%, rgba(17, 16, 34, 0.4) 100%);
+  }
+  .dashboard-heading {
+    text-shadow: 0 1px 14px rgba(252, 237, 244, 0.85);
+  }
+  .dark .dashboard-heading {
+    text-shadow: 0 2px 18px rgba(17, 16, 34, 0.9);
   }
 
   .progress-track {

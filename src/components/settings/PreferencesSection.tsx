@@ -11,6 +11,7 @@ import { useAppStatus } from "../StatusProvider";
 import { type Theme, useTheme } from "../ThemeProvider";
 import { useToast } from "../Toast";
 import { Accordion, Switch } from "../ui";
+import { BackgroundPicker } from "./BackgroundPicker";
 import { SectionCard, SectionHeader } from "./SectionLayout";
 
 const MODEL_SUGGESTIONS = {
@@ -100,40 +101,50 @@ export function PreferencesSection() {
       <SectionHeader title="Preferences" description="Choose how Saydraft looks, transcribes, and polishes your notes." />
 
       <SectionCard title="Appearance">
-        <div role="radiogroup" aria-label="Theme" className="inline-flex rounded-full bg-[var(--surface-subtle)] p-1">
-          {(
-            [
-              ["system", "System", Monitor],
-              ["light", "Light", Sun],
-              ["dark", "Dark", Moon],
-            ] as Array<[Theme, string, typeof Sun]>
-          ).map(([value, label, Icon]) => {
-            const active = theme === value;
-            return (
-              <button
-                key={value}
-                type="button"
-                role="radio"
-                aria-checked={active}
-                onClick={() => setTheme(value)}
-                className={`relative inline-flex cursor-pointer items-center gap-1.5 rounded-full px-3.5 py-1.5 text-sm font-medium transition-colors duration-150 ${
-                  active ? "text-[var(--ink)]" : "text-[var(--ink-muted)] hover:text-[var(--ink)]"
-                }`}
-              >
-                {active && (
-                  <motion.span
-                    layoutId="prefs-theme-pill"
-                    transition={SPRING_SNAPPY}
-                    aria-hidden="true"
-                    className="absolute inset-0 rounded-full bg-[var(--surface)] shadow-xs"
-                  />
-                )}
-                <span className="relative z-10 inline-flex items-center gap-1.5">
-                  <Icon className="h-3.5 w-3.5" /> {label}
-                </span>
-              </button>
-            );
-          })}
+        <div className="space-y-5">
+          <div role="radiogroup" aria-label="Theme" className="inline-flex rounded-full bg-[var(--surface-subtle)] p-1">
+            {(
+              [
+                ["system", "System", Monitor],
+                ["light", "Light", Sun],
+                ["dark", "Dark", Moon],
+              ] as Array<[Theme, string, typeof Sun]>
+            ).map(([value, label, Icon]) => {
+              const active = theme === value;
+              return (
+                <button
+                  key={value}
+                  type="button"
+                  role="radio"
+                  aria-checked={active}
+                  onClick={() => setTheme(value)}
+                  className={`relative inline-flex cursor-pointer items-center gap-1.5 rounded-full px-3.5 py-1.5 text-sm font-medium transition-colors duration-150 ${
+                    active ? "text-[var(--ink)]" : "text-[var(--ink-muted)] hover:text-[var(--ink)]"
+                  }`}
+                >
+                  {active && (
+                    <motion.span
+                      layoutId="prefs-theme-pill"
+                      transition={SPRING_SNAPPY}
+                      aria-hidden="true"
+                      className="absolute inset-0 rounded-full bg-[var(--surface)] shadow-xs"
+                    />
+                  )}
+                  <span className="relative z-10 inline-flex items-center gap-1.5">
+                    <Icon className="h-3.5 w-3.5" /> {label}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          <div>
+            <p className="text-sm font-medium">Dashboard background</p>
+            <p className="mb-3 mt-0.5 text-xs text-[var(--ink-muted)]">
+              Pick a fixed wallpaper or let Saydraft rotate all 7 every 30 minutes.
+            </p>
+            <BackgroundPicker />
+          </div>
         </div>
       </SectionCard>
 

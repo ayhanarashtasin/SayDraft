@@ -32,6 +32,7 @@ import { TagModal } from "../TagManager";
 import { useConfirm } from "../ConfirmDialog";
 import { useToast } from "../Toast";
 import { CuteMicIcon, Popover, Spinner, TagDot } from "../ui";
+import { DashboardBackdrop } from "./DashboardBackdrop";
 import { MergeDialog } from "./MergeDialog";
 import { NoteCard } from "./NoteCard";
 
@@ -358,7 +359,8 @@ export function NotesFeed() {
   const searchActive = (searchOpen || Boolean(debounced)) && !selecting;
 
   return (
-    <div className="notes-feed flex min-h-screen w-full flex-col px-5 pb-[7.375rem] pt-3 sm:px-8 xl:px-16">
+    <div className="notes-feed relative flex min-h-screen w-full flex-col px-5 pb-[7.375rem] pt-3 sm:px-8 xl:px-16">
+      <DashboardBackdrop />
       <header className="sticky top-3 z-20 mb-8 sm:mb-10">
         <div className="mx-auto flex w-full max-w-[44.25rem] items-center justify-center gap-2">
           <Popover
@@ -372,7 +374,7 @@ export function NotesFeed() {
                 onClick={() => setMenu(menu === "sort" ? null : "sort")}
                 aria-label="Sort by"
                 aria-expanded={menu === "sort"}
-                className="flex h-11 w-11 cursor-pointer items-center justify-center rounded-full border border-[var(--border)]/70 bg-[var(--surface-panel)] text-[var(--ink)] shadow-xs transition-opacity hover:opacity-70"
+                className="flex h-11 w-11 cursor-pointer items-center justify-center rounded-full border border-[var(--border)]/70 bg-[var(--surface-panel)]/90 text-[var(--ink)] shadow-xs backdrop-blur-md transition-opacity hover:opacity-70"
               >
                 <SortArrowsIcon className="h-5 w-5" />
               </motion.button>
@@ -407,7 +409,7 @@ export function NotesFeed() {
             </div>
           </Popover>
 
-          <div className="flex w-fit max-w-[calc(100%-6.75rem)] items-center rounded-full border border-[var(--border)]/70 bg-[var(--surface-panel)] px-1.5 shadow-xs sm:px-2">
+          <div className="flex w-fit max-w-[calc(100%-6.75rem)] items-center rounded-full border border-[var(--border)]/70 bg-[var(--surface-panel)]/90 px-1.5 shadow-xs backdrop-blur-md sm:px-2">
             <nav ref={filterNavRef} aria-label="Filter notes" className="no-scrollbar flex items-center overflow-x-auto">
               {filterTabs.map((tab) => {
                 const key = filterKey(tab.value);
@@ -458,7 +460,7 @@ export function NotesFeed() {
             whileTap={TAP_ICON}
             onClick={() => setSettingsOpen(true)}
             aria-label="Settings"
-            className="flex h-11 w-11 cursor-pointer items-center justify-center rounded-full border border-[var(--border)]/70 bg-[var(--surface-panel)] text-[var(--ink)] shadow-xs transition-opacity hover:opacity-70"
+            className="flex h-11 w-11 cursor-pointer items-center justify-center rounded-full border border-[var(--border)]/70 bg-[var(--surface-panel)]/90 text-[var(--ink)] shadow-xs backdrop-blur-md transition-opacity hover:opacity-70"
           >
             <HexSettingsIcon className="h-6 w-6" />
           </motion.button>
@@ -468,7 +470,7 @@ export function NotesFeed() {
         </div>
       </header>
 
-      <div className="space-y-3">
+      <div className="relative z-10 space-y-3">
         {offline && (
           <div className="alert alert-error flex flex-wrap items-center justify-between gap-2">
             <span>Unable to connect right now. Check your connection and try again.</span>
@@ -498,7 +500,7 @@ export function NotesFeed() {
         )}
       </div>
 
-      <main aria-busy={loading || filterPending} className="flex flex-1 flex-col">
+      <main aria-busy={loading || filterPending} className="relative z-10 flex flex-1 flex-col">
         <AnimatePresence initial={false}>
           {galleryBanner && !displayedQuery && (
             <motion.div
@@ -592,7 +594,10 @@ export function NotesFeed() {
             ))}
           </div>
         ) : groups.length === 0 ? (
-          <div key={`empty-${visibleResult.view.key}`} className="view-enter mx-auto my-auto max-w-md px-6 py-16 text-center">
+          <div
+            key={`empty-${visibleResult.view.key}`}
+            className="view-enter mx-auto my-auto max-w-md rounded-[2rem] border border-[var(--border)]/70 bg-[var(--surface)]/84 px-8 py-12 text-center shadow-xs backdrop-blur-md"
+          >
             {displayedFilter.kind === "archive" ? (
               <ArchiveBoxIllustration className="mx-auto mb-4 h-24 w-24" />
             ) : (
@@ -601,7 +606,7 @@ export function NotesFeed() {
               </span>
             )}
             <h1 className="text-xl font-bold tracking-tight text-[var(--ink)]">{emptyMessage.title}</h1>
-            <p className="mx-auto mt-1.5 max-w-sm text-[0.9375rem] text-[var(--ink-muted)]">{emptyMessage.body}</p>
+            <p className="mx-auto mt-1.5 max-w-sm text-[0.9375rem] text-[var(--ink-subtle)]">{emptyMessage.body}</p>
             {displayedFilter.kind === "all" && !displayedQuery && (
               <div className="mt-6 flex flex-wrap justify-center gap-2.5">
                 <Link href="/record" className="btn btn-primary">
@@ -618,7 +623,7 @@ export function NotesFeed() {
             {groups.map((group) => (
               <section key={group.key} aria-label={group.secondary ? `${group.primary} ${group.secondary}` : group.primary}>
                 <h2
-                  className={`mb-5 font-semibold ${
+                  className={`dashboard-heading mb-5 font-semibold ${
                     group.isToday
                       ? "text-[2.75rem]/[3.25rem] tracking-[-0.025em] sm:text-[3rem]/[3.5rem]"
                       : "text-[1.75rem]/[2.25rem] tracking-[-0.02em] sm:text-[2rem]/[2.625rem]"
@@ -628,7 +633,7 @@ export function NotesFeed() {
                   {group.secondary && (
                     <>
                       {" "}
-                      <span className="block text-[var(--ink-muted)] sm:inline">{group.secondary}</span>
+                      <span className="block text-[var(--ink-subtle)] sm:inline">{group.secondary}</span>
                     </>
                   )}
                 </h2>

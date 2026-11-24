@@ -3,7 +3,8 @@
 import Link from "next/link";
 import { useId, useState } from "react";
 import { Eye, EyeOff } from "lucide-react";
-import { CuteMicIcon, Spinner } from "@/components/ui";
+import { BrandLogo } from "@/components/BrandLogo";
+import { Spinner } from "@/components/ui";
 import { api, errorMessage } from "@/lib/api-client";
 import { PASSWORD_MAX, PASSWORD_MIN, safeNext } from "@/lib/auth-shared";
 
@@ -47,8 +48,8 @@ export function AuthForm({ mode, next }: AuthFormProps) {
     <main className="flex min-h-screen w-full items-center justify-center bg-[var(--canvas)] px-5 py-10">
       <div className="w-full max-w-[26rem]">
         <div className="mb-6 flex flex-col items-center text-center">
-          <span className="flex h-16 w-16 items-center justify-center rounded-full bg-[var(--cta-bg)] text-[var(--cta-ink)] shadow-md">
-            <CuteMicIcon className="h-10 w-10" />
+          <span className="flex h-16 w-16 items-center justify-center rounded-2xl bg-[var(--cta-bg)] text-[var(--cta-ink)] shadow-md ring-1 ring-[var(--border-subtle)]">
+            <BrandLogo className="h-10 w-10" />
           </span>
           <p className="mt-3 text-xl font-bold tracking-tight text-[var(--ink)]">Saydraft</p>
         </div>

@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { FolderArchive, RefreshCw, SlidersHorizontal, Sparkles, UserRound } from "lucide-react";
 import { motion } from "motion/react";
 import { api, errorMessage } from "@/lib/api-client";
+import { DASHBOARD_BACKGROUNDS, backgroundPreferenceLabel } from "@/lib/dashboard-backgrounds";
 import { languageLabel } from "@/lib/languages";
 import { SPRING_SNAPPY } from "@/lib/motion";
 import type { AppSettings } from "@/lib/types";
@@ -15,7 +16,9 @@ import { LanguageDialog } from "../note/LanguageDialog";
 import { useAppStatus } from "../StatusProvider";
 import { type Theme, useTheme } from "../ThemeProvider";
 import { useToast } from "../Toast";
-import { CuteMicIcon, Dialog, Drawer } from "../ui";
+import { BrandLogo } from "../BrandLogo";
+import { Dialog, Drawer } from "../ui";
+import { BackgroundPicker, useBackgroundPreference } from "./BackgroundPicker";
 import { IntegrationsSection } from "./IntegrationsSection";
 import { DictionarySection, ReplacementsSection } from "./VocabularySections";
 
@@ -26,15 +29,17 @@ interface SettingsDrawerProps {
   onOpenGallery: () => void;
 }
 
-type ModalKind = "language" | "dictionary" | "replacements" | "actions" | null;
+type ModalKind = "background" | "language" | "dictionary" | "replacements" | "actions" | null;
 
 export function SettingsDrawer({ open, onClose, onOpenTags, onOpenGallery }: SettingsDrawerProps) {
   const toast = useToast();
   const { theme, setTheme } = useTheme();
+  const [bgPref] = useBackgroundPreference();
   const { status, refresh } = useAppStatus();
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [modal, setModal] = useState<ModalKind>(null);
   const user = useCurrentUser(open);
+  const selectedBg = bgPref === "auto" ? null : DASHBOARD_BACKGROUNDS.find((bg) => bg.id === bgPref) ?? null;
 
   useEffect(() => {
     if (!open) return;
@@ -152,6 +157,24 @@ export function SettingsDrawer({ open, onClose, onOpenTags, onOpenGallery }: Set
               <li>
                 <button
                   type="button"
+                  onClick={() => setModal("background")}
+                  className="flex w-full cursor-pointer items-center gap-2.5 py-3 text-left text-[0.9375rem] text-[var(--ink)] transition-opacity hover:opacity-70"
+                >
+                  <span className="flex-1 truncate font-medium">Background</span>
+                  {selectedBg && (
+                    <img
+                      src={selectedBg.src}
+                      alt=""
+                      className="h-5 w-8 shrink-0 rounded-md object-cover ring-1 ring-[var(--border-strong)]/40"
+                    />
+                  )}
+                  <span className="truncate text-sm text-[var(--ink-subtle)]">{backgroundPreferenceLabel(bgPref)}</span>
+                  <ChevronCircleRightIcon className="h-5 w-5 shrink-0 text-[var(--ink-subtle)]/45" />
+                </button>
+              </li>
+              <li>
+                <button
+                  type="button"
                   onClick={() => setModal("language")}
                   className="flex w-full cursor-pointer items-center gap-2 py-3 text-left text-[0.9375rem] text-[var(--ink)] transition-opacity hover:opacity-70"
                 >
@@ -231,8 +254,8 @@ export function SettingsDrawer({ open, onClose, onOpenTags, onOpenGallery }: Set
 
           <section className="rounded-2xl bg-[var(--surface-panel-card)] p-4">
             <div className="flex items-center gap-3">
-              <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-[var(--surface-panel)] text-[var(--ink)]">
-                <CuteMicIcon className="h-8 w-8" eyeFill="var(--surface-panel)" />
+              <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-[var(--surface-panel)] text-[var(--ink)] ring-1 ring-[var(--border-subtle)]">
+                <BrandLogo className="h-7 w-7" />
               </span>
               <div className="min-w-0">
                 <p className="text-xs font-medium text-[var(--ink-muted)]">Workspace</p>
@@ -275,6 +298,10 @@ export function SettingsDrawer({ open, onClose, onOpenTags, onOpenGallery }: Set
           </section>
         </div>
       </Drawer>
+
+      <Dialog open={modal === "background"} onClose={() => setModal(null)} title="Dashboard background" centeredHeader size="md">
+        <BackgroundPicker compact />
+      </Dialog>
 
       <LanguageDialog
         open={modal === "language"}
