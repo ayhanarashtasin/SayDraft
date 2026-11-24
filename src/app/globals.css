@@ -511,13 +511,30 @@ html:has(.notes-feed) {
   scrollbar-gutter: stable;
 }
 
+@keyframes shimmer-sweep {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+
 @media (prefers-reduced-motion: no-preference) {
   .view-enter {
     animation: view-enter 180ms var(--ease-out-expo);
   }
 
-  .pending-hint {
-    animation: appear 120ms var(--ease-out-expo) 120ms both;
+  .shimmer-card::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, transparent 0%, rgba(106, 90, 214, 0.07) 50%, transparent 100%);
+    animation: shimmer-sweep 1.4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+    pointer-events: none;
+  }
+  .dark .shimmer-card::after {
+    background: linear-gradient(90deg, transparent 0%, rgba(139, 127, 255, 0.1) 50%, transparent 100%);
   }
 }
 
@@ -552,7 +569,60 @@ html:has(.notes-feed) {
   animation: spin-once 0.25s linear;
 }
 
+.splash-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--canvas);
+  color: var(--ink);
+  animation: splash-fade-out 250ms var(--ease-out-expo) 1750ms forwards;
+}
+.splash-logo {
+  width: 140px;
+  height: 140px;
+  -webkit-mask-image: linear-gradient(120deg, #000 25%, rgba(0, 0, 0, 0.1) 50%, #000 75%);
+  mask-image: linear-gradient(120deg, #000 25%, rgba(0, 0, 0, 0.1) 50%, #000 75%);
+  -webkit-mask-size: 800%;
+  mask-size: 800%;
+  -webkit-mask-position: 120%;
+  mask-position: 120%;
+  animation: splash-shimmer 2s linear forwards;
+}
+@keyframes splash-shimmer {
+  0% {
+    -webkit-mask-position: 120%;
+    mask-position: 120%;
+  }
+  100% {
+    -webkit-mask-position: 0%;
+    mask-position: 0%;
+  }
+}
+@keyframes splash-fade-out {
+  0% {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: none;
+  }
+  99% {
+    opacity: 0;
+    visibility: visible;
+    pointer-events: none;
+  }
+  100% {
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .splash-screen {
+    display: none;
+  }
   html {
     scroll-behavior: auto;
   }

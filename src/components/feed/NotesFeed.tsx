@@ -34,7 +34,7 @@ import { useToast } from "../Toast";
 import { CuteMicIcon, Popover, Spinner, TagDot } from "../ui";
 import { DashboardBackdrop } from "./DashboardBackdrop";
 import { MergeDialog } from "./MergeDialog";
-import { NoteCard } from "./NoteCard";
+import { CardSkeletonLines, NoteCard } from "./NoteCard";
 
 type Filter = { kind: "all" } | { kind: "unsorted" } | { kind: "archive" } | { kind: "tag"; tagId: number };
 
@@ -130,10 +130,20 @@ export function NotesFeed() {
   const visibleResult = useMemo(() => {
     if (!filterChanging || !result) return result;
     if (recentResults[view.key]) return recentResults[view.key];
-    // Unsorted is a subset of the same non-archived notes, so it can be shown before the server replies.
-    if (view.filter.kind === "unsorted" && result.view.filter.kind === "all" &&
-        result.view.query === view.query && result.view.sortBy === view.sortBy) {
-      return { view, notes: result.notes.filter((note) => note.tags.length === 0) };
+    // Derive Unsorted and Tag tabs immediately from any cached "all" result for zero-flicker switching.
+    const allKey = new URLSearchParams({ sortBy: view.sortBy, filter: "all", ...(view.query ? { q: view.query } : {}) }).toString();
+    const allSource =
+      result.view.filter.kind === "all" && result.view.query === view.query && result.view.sortBy === view.sortBy
+        ? result
+        : recentResults[allKey];
+    if (allSource) {
+      if (view.filter.kind === "unsorted") {
+        return { view, notes: allSource.notes.filter((note) => note.tags.length === 0) };
+      }
+      if (view.filter.kind === "tag") {
+        const tagId = view.filter.tagId;
+        return { view, notes: allSource.notes.filter((note) => note.tags.some((tag) => tag.id === tagId)) };
+      }
     }
     return null;
   }, [filterChanging, recentResults, result, view]);
@@ -204,8 +214,8 @@ export function NotesFeed() {
 
       const nextResult = { view: requested, notes: data.notes };
       setResult(nextResult);
-      // Keep at most the standard filters for each sort; searches and individual tags are not cached.
-      if (!requested.query && requested.filter.kind !== "tag") {
+      // Cache non-search tab results so subsequent switches settle cleanly without a blank flash.
+      if (!requested.query) {
         setRecentResults((current) => ({ ...current, [requested.key]: nextResult }));
       }
       setLoadError(null);
@@ -409,7 +419,7 @@ export function NotesFeed() {
             </div>
           </Popover>
 
-          <div className="flex w-fit max-w-[calc(100%-6.75rem)] items-center rounded-full border border-[var(--border)]/70 bg-[var(--surface-panel)]/90 px-1.5 shadow-xs backdrop-blur-md sm:px-2">
+          <div className="relative flex w-fit max-w-[calc(100%-6.75rem)] items-center overflow-hidden rounded-full border border-[var(--border)]/70 bg-[var(--surface-panel)]/90 px-1.5 shadow-xs backdrop-blur-md sm:px-2">
             <nav ref={filterNavRef} aria-label="Filter notes" className="no-scrollbar flex items-center overflow-x-auto">
               {filterTabs.map((tab) => {
                 const key = filterKey(tab.value);
@@ -453,6 +463,26 @@ export function NotesFeed() {
             >
               <ChevronRight className="h-4 w-4" />
             </button>
+            <AnimatePresence>
+              {(filterPending || (!result && !loadError)) && (
+                <motion.div
+                  key="filter-loading-bar"
+                  aria-hidden="true"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.15 }}
+                  className="pointer-events-none absolute inset-x-3 bottom-0 h-[2px] overflow-hidden rounded-full"
+                >
+                  <motion.span
+                    className="block h-full w-2/5 rounded-full bg-gradient-to-r from-transparent via-[var(--brand)] to-transparent"
+                    initial={{ x: "-100%" }}
+                    animate={{ x: "320%" }}
+                    transition={{ duration: 1.05, repeat: Infinity, ease: "easeInOut" }}
+                  />
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
 
           <motion.button
@@ -465,8 +495,8 @@ export function NotesFeed() {
             <HexSettingsIcon className="h-6 w-6" />
           </motion.button>
         </div>
-        <div role="status" className="pointer-events-none absolute inset-x-0 top-full mt-1.5 text-center text-xs text-[var(--ink-muted)]">
-          {(filterPending || (!result && !loadError)) && <span key={activeFilter} className="pending-hint rounded-full bg-[var(--canvas)] px-2">{pendingLabel}</span>}
+        <div role="status" className="sr-only">
+          {(filterPending || (!result && !loadError)) ? pendingLabel : ""}
         </div>
       </header>
 
@@ -580,89 +610,130 @@ export function NotesFeed() {
           )}
         </AnimatePresence>
 
-        {loadError ? (
-          <div className="alert alert-error flex flex-wrap items-center justify-between gap-2">
-            <span>{loadError}</span>
-            <button type="button" className="btn btn-secondary btn-sm" onClick={() => void loadNotes()}>
-              Try again
-            </button>
-          </div>
-        ) : !visibleResult ? (
-          <div key={activeFilter} aria-hidden="true" className="view-enter mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {[0, 1, 2].map((key) => (
-              <div key={key} className="surface-card h-[14.5rem] rounded-[1.75rem] opacity-65" />
-            ))}
-          </div>
-        ) : groups.length === 0 ? (
-          <div
-            key={`empty-${visibleResult.view.key}`}
-            className="view-enter mx-auto my-auto max-w-md rounded-[2rem] border border-[var(--border)]/70 bg-[var(--surface)]/84 px-8 py-12 text-center shadow-xs backdrop-blur-md"
-          >
-            {displayedFilter.kind === "archive" ? (
-              <ArchiveBoxIllustration className="mx-auto mb-4 h-24 w-24" />
-            ) : (
-              <span className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-[var(--surface-panel)] text-[var(--brand)]">
-                <Mic className="h-7 w-7" />
-              </span>
-            )}
-            <h1 className="text-xl font-bold tracking-tight text-[var(--ink)]">{emptyMessage.title}</h1>
-            <p className="mx-auto mt-1.5 max-w-sm text-[0.9375rem] text-[var(--ink-subtle)]">{emptyMessage.body}</p>
-            {displayedFilter.kind === "all" && !displayedQuery && (
-              <div className="mt-6 flex flex-wrap justify-center gap-2.5">
-                <Link href="/record" className="btn btn-primary">
-                  <Mic className="h-4 w-4" /> Record voice note
-                </Link>
-                <Link href="/notes/new" prefetch className="btn btn-secondary">
-                  Write a note <OpeningNote />
-                </Link>
-              </div>
-            )}
-          </div>
-        ) : (
-          <div key={filterKey(displayedFilter)} className="view-enter space-y-10">
-            {groups.map((group) => (
-              <section key={group.key} aria-label={group.secondary ? `${group.primary} ${group.secondary}` : group.primary}>
-                <h2
-                  className={`dashboard-heading mb-5 font-semibold ${
-                    group.isToday
-                      ? "text-[2.75rem]/[3.25rem] tracking-[-0.025em] sm:text-[3rem]/[3.5rem]"
-                      : "text-[1.75rem]/[2.25rem] tracking-[-0.02em] sm:text-[2rem]/[2.625rem]"
-                  }`}
-                >
-                  <span className="text-[var(--ink)]">{group.primary}</span>
-                  {group.secondary && (
-                    <>
-                      {" "}
-                      <span className="block text-[var(--ink-subtle)] sm:inline">{group.secondary}</span>
-                    </>
-                  )}
-                </h2>
-                <ul className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
-                  <AnimatePresence mode="popLayout" initial={false}>
-                    {group.items.map((note) => (
-                      <motion.li
-                        key={note.id}
-                        layout="position"
-                        initial={{ opacity: 0, scale: 0.97, y: 8 }}
-                        animate={{ opacity: 1, scale: 1, y: 0 }}
-                        exit={{ opacity: 0, scale: 0.96 }}
-                        transition={SPRING_SMOOTH}
-                      >
-                        <NoteCard
-                          note={note}
-                          sortBy={displayedSort}
-                          selectionOrder={selectionIndex.get(note.id) ?? null}
-                          selecting={selecting}
-                          onToggleSelect={() => toggle(note.id)}
-                        />
-                      </motion.li>
-                    ))}
-                  </AnimatePresence>
-                </ul>
-              </section>
-            ))}
-          </div>
-        )}
+        <AnimatePresence mode="wait" initial={false}>
+          {loadError ? (
+            <motion.div
+              key="feed-error"
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.14, ease: EASE_OUT }}
+              className="alert alert-error flex flex-wrap items-center justify-between gap-2"
+            >
+              <span>{loadError}</span>
+              <button type="button" className="btn btn-secondary btn-sm" onClick={() => void loadNotes()}>
+                Try again
+              </button>
+            </motion.div>
+          ) : !visibleResult ? (
+            <motion.div
+              key={`skeleton-${activeFilter}`}
+              aria-hidden="true"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.14, ease: EASE_OUT }}
+              className="space-y-6"
+            >
+              <div className="h-10 w-52 animate-pulse rounded-full bg-[var(--surface-panel)]/70" />
+              <ul className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
+                {[0, 1, 2].map((index) => (
+                  <motion.li
+                    key={index}
+                    initial={{ opacity: 0, y: 10, scale: 0.98 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    transition={{ ...SPRING_SMOOTH, delay: index * 0.045 }}
+                    className="shimmer-card relative flex h-[14.5rem] flex-col overflow-hidden rounded-[1.75rem] border border-[var(--border)] bg-[var(--surface)]/92 p-6 shadow-[0_2px_16px_rgba(1,5,15,0.05)] backdrop-blur-md"
+                  >
+                    <div className="h-3.5 w-28 animate-pulse rounded-full bg-[var(--border)]/75" />
+                    <div className="mt-3 h-5 w-3/4 animate-pulse rounded-full bg-[var(--border)]/85" />
+                    <CardSkeletonLines pulse />
+                  </motion.li>
+                ))}
+              </ul>
+            </motion.div>
+          ) : groups.length === 0 ? (
+            <motion.div
+              key={`empty-${filterKey(displayedFilter)}-${displayedQuery}`}
+              initial={{ opacity: 0, y: 8, scale: 0.99 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -4 }}
+              transition={{ duration: 0.16, ease: EASE_OUT }}
+              className="mx-auto my-auto max-w-md rounded-[2rem] border border-[var(--border)]/70 bg-[var(--surface)]/84 px-8 py-12 text-center shadow-xs backdrop-blur-md"
+            >
+              {displayedFilter.kind === "archive" ? (
+                <ArchiveBoxIllustration className="mx-auto mb-4 h-24 w-24" />
+              ) : (
+                <span className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-[var(--surface-panel)] text-[var(--brand)]">
+                  <Mic className="h-7 w-7" />
+                </span>
+              )}
+              <h1 className="text-xl font-bold tracking-tight text-[var(--ink)]">{emptyMessage.title}</h1>
+              <p className="mx-auto mt-1.5 max-w-sm text-[0.9375rem] text-[var(--ink-subtle)]">{emptyMessage.body}</p>
+              {displayedFilter.kind === "all" && !displayedQuery && (
+                <div className="mt-6 flex flex-wrap justify-center gap-2.5">
+                  <Link href="/record" className="btn btn-primary">
+                    <Mic className="h-4 w-4" /> Record voice note
+                  </Link>
+                  <Link href="/notes/new" prefetch className="btn btn-secondary">
+                    Write a note <OpeningNote />
+                  </Link>
+                </div>
+              )}
+            </motion.div>
+          ) : (
+            <motion.div
+              key={filterKey(displayedFilter)}
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -4 }}
+              transition={{ duration: 0.14, ease: EASE_OUT }}
+              className="space-y-10"
+            >
+              {groups.map((group) => (
+                <section key={group.key} aria-label={group.secondary ? `${group.primary} ${group.secondary}` : group.primary}>
+                  <h2
+                    className={`dashboard-heading mb-5 font-semibold ${
+                      group.isToday
+                        ? "text-[2.75rem]/[3.25rem] tracking-[-0.025em] sm:text-[3rem]/[3.5rem]"
+                        : "text-[1.75rem]/[2.25rem] tracking-[-0.02em] sm:text-[2rem]/[2.625rem]"
+                    }`}
+                  >
+                    <span className="text-[var(--ink)]">{group.primary}</span>
+                    {group.secondary && (
+                      <>
+                        {" "}
+                        <span className="block text-[var(--ink-subtle)] sm:inline">{group.secondary}</span>
+                      </>
+                    )}
+                  </h2>
+                  <ul className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
+                    <AnimatePresence mode="popLayout" initial={false}>
+                      {group.items.map((note) => (
+                        <motion.li
+                          key={note.id}
+                          layout="position"
+                          initial={{ opacity: 0, scale: 0.97, y: 8 }}
+                          animate={{ opacity: 1, scale: 1, y: 0 }}
+                          exit={{ opacity: 0, scale: 0.96 }}
+                          transition={SPRING_SMOOTH}
+                        >
+                          <NoteCard
+                            note={note}
+                            sortBy={displayedSort}
+                            selectionOrder={selectionIndex.get(note.id) ?? null}
+                            selecting={selecting}
+                            onToggleSelect={() => toggle(note.id)}
+                          />
+                        </motion.li>
+                      ))}
+                    </AnimatePresence>
+                  </ul>
+                </section>
+              ))}
+            </motion.div>
+          )}
+        </AnimatePresence>
       </main>
 
       <div className="pointer-events-none fixed inset-x-0 bottom-5 z-30 flex justify-center px-4">

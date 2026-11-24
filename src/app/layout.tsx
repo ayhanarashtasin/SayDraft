@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import "@fontsource-variable/inter";
 import { ConfirmProvider } from "@/components/ConfirmDialog";
+import { SplashScreen } from "@/components/SplashScreen";
 import { StatusProvider } from "@/components/StatusProvider";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import { ToastProvider } from "@/components/Toast";
@@ -45,6 +46,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>
       <body className="min-h-screen overscroll-y-none antialiased">
+        <SplashScreen />
         <ThemeProvider>
           <MotionProvider>
             <ToastProvider>

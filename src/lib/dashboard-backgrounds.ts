@@ -24,11 +24,14 @@ export const DASHBOARD_BACKGROUNDS: readonly DashboardBackground[] = [
   { id: "icy-satin", label: "Icy Satin", src: "/dashboard-bg/07-icy-satin.webp", tone: "light", position: "center center" },
 ] as const;
 
-export type BackgroundPreference = "auto" | (typeof DASHBOARD_BACKGROUNDS)[number]["id"];
+export type BackgroundPreference = "none" | "auto" | (typeof DASHBOARD_BACKGROUNDS)[number]["id"];
+
+export const DEFAULT_BACKGROUND_PREFERENCE: BackgroundPreference = "none";
 
 export function parseBackgroundPreference(raw: string | null | undefined): BackgroundPreference {
-  if (!raw || raw === "auto") return "auto";
-  return DASHBOARD_BACKGROUNDS.some((bg) => bg.id === raw) ? raw : "auto";
+  if (!raw || raw === "none") return "none";
+  if (raw === "auto") return "auto";
+  return DASHBOARD_BACKGROUNDS.some((bg) => bg.id === raw) ? raw : "none";
 }
 
 export function getBackgroundIndex(nowMs = Date.now()): number {
@@ -37,7 +40,8 @@ export function getBackgroundIndex(nowMs = Date.now()): number {
   return ((slot % count) + count) % count;
 }
 
-export function resolveBackgroundIndex(pref: BackgroundPreference, nowMs = Date.now()): number {
+export function resolveBackgroundIndex(pref: BackgroundPreference, nowMs = Date.now()): number | null {
+  if (pref === "none") return null;
   if (pref !== "auto") {
     const fixed = DASHBOARD_BACKGROUNDS.findIndex((bg) => bg.id === pref);
     if (fixed >= 0) return fixed;
@@ -46,16 +50,17 @@ export function resolveBackgroundIndex(pref: BackgroundPreference, nowMs = Date.
 }
 
 export function backgroundPreferenceLabel(pref: BackgroundPreference): string {
+  if (pref === "none") return "Default";
   if (pref === "auto") return "Auto (30m)";
-  return DASHBOARD_BACKGROUNDS.find((bg) => bg.id === pref)?.label ?? "Auto (30m)";
+  return DASHBOARD_BACKGROUNDS.find((bg) => bg.id === pref)?.label ?? "Default";
 }
 
 export function readBackgroundPreference(): BackgroundPreference {
-  if (typeof window === "undefined") return "auto";
+  if (typeof window === "undefined") return DEFAULT_BACKGROUND_PREFERENCE;
   try {
     return parseBackgroundPreference(localStorage.getItem(BACKGROUND_STORAGE_KEY));
   } catch {
-    return "auto";
+    return DEFAULT_BACKGROUND_PREFERENCE;
   }
 }
 

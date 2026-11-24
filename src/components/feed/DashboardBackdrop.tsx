@@ -37,7 +37,7 @@ export function DashboardBackdrop() {
       const current = resolveBackgroundIndex(pref, now);
       setIndex(current);
 
-      if (pref !== "auto") return;
+      if (pref !== "auto" || current === null) return;
 
       const delay = msUntilNextRotation(now);
       if (delay <= PRELOAD_LEAD_MS) {

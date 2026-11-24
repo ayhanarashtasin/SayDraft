@@ -16,7 +16,7 @@ interface NoteCardProps {
   onToggleSelect: () => void;
 }
 
-function CardSkeletonLines({ pulse = false }: { pulse?: boolean }) {
+export function CardSkeletonLines({ pulse = false }: { pulse?: boolean }) {
   return (
     <div aria-hidden="true" className={`mt-3 space-y-2.5 ${pulse ? "animate-pulse" : ""}`}>
       <div className="h-3.5 w-1/2 rounded-full bg-[var(--border)]/75" />

@@ -67,13 +67,16 @@ test("all 7 dashboard background files exist in public/dashboard-bg/ and are non
   }
 });
 
-test("background preference parsing and resolution support auto rotation and pinned wallpapers", () => {
-  assert.equal(parseBackgroundPreference(null), "auto");
+test("background preference parsing and resolution default to none and support auto rotation and pinned wallpapers", () => {
+  assert.equal(parseBackgroundPreference(null), "none");
+  assert.equal(parseBackgroundPreference("none"), "none");
   assert.equal(parseBackgroundPreference("auto"), "auto");
-  assert.equal(parseBackgroundPreference("does-not-exist"), "auto");
+  assert.equal(parseBackgroundPreference("does-not-exist"), "none");
   assert.equal(parseBackgroundPreference("neon-silk"), "neon-silk");
 
   const fixedNow = 1_700_000_000_000;
+  assert.equal(resolveBackgroundIndex("none", fixedNow), null);
+  assert.equal(backgroundPreferenceLabel("none"), "Default");
   assert.equal(resolveBackgroundIndex("auto", fixedNow), getBackgroundIndex(fixedNow));
   assert.equal(backgroundPreferenceLabel("auto"), "Auto (30m)");
 

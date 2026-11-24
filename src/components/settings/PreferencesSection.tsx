@@ -141,7 +141,7 @@ export function PreferencesSection() {
           <div>
             <p className="text-sm font-medium">Dashboard background</p>
             <p className="mb-3 mt-0.5 text-xs text-[var(--ink-muted)]">
-              Pick a fixed wallpaper or let Saydraft rotate all 7 every 30 minutes.
+              Keep the clean Default canvas, pick a fixed wallpaper, or turn on 30-minute auto-change.
             </p>
             <BackgroundPicker />
           </div>

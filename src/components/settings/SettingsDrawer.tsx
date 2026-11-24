@@ -39,7 +39,7 @@ export function SettingsDrawer({ open, onClose, onOpenTags, onOpenGallery }: Set
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [modal, setModal] = useState<ModalKind>(null);
   const user = useCurrentUser(open);
-  const selectedBg = bgPref === "auto" ? null : DASHBOARD_BACKGROUNDS.find((bg) => bg.id === bgPref) ?? null;
+  const selectedBg = bgPref === "none" || bgPref === "auto" ? null : DASHBOARD_BACKGROUNDS.find((bg) => bg.id === bgPref) ?? null;
 
   useEffect(() => {
     if (!open) return;
