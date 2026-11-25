@@ -131,6 +131,7 @@ export interface TranscribeInput {
   diarize?: boolean;
   speakerLabelModel?: string;
   signal?: AbortSignal;
+  preview?: boolean;
 }
 
 export interface TranscribeResult {
@@ -188,12 +189,13 @@ export async function transcribe(input: TranscribeInput): Promise<TranscribeResu
       } else {
         form.set("response_format", labelModel ? "verbose_json" : "json");
         if (labelModel) form.set("timestamp_granularities[]", "segment");
+        if (input.preview) form.set("temperature", "0");
         if (input.prompt) form.set("prompt", input.prompt);
       }
       return form;
     },
     {},
-    { kind: "audio", timeoutMs: 15 * 60_000, retries: 2, signal: input.signal },
+    { kind: "audio", timeoutMs: input.preview ? 8_000 : 15 * 60_000, retries: input.preview ? 0 : 2, signal: input.signal },
   );
   const data = (await response.json().catch(() => null)) as {
     text?: unknown;

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ChevronDown, Download, Mic, MonitorSpeaker, RotateCcw, Square, Trash2, Users } from "lucide-react";
+import { Captions, ChevronDown, Download, Mic, MonitorSpeaker, RotateCcw, Square, Trash2, Users } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { api, errorMessage } from "@/lib/api-client";
 import { formatCountdown } from "@/lib/format";
@@ -18,12 +18,13 @@ import { useToast } from "../Toast";
 import { ProgressBar, Spinner, Switch } from "../ui";
 import { type AudioSource, openAudioSource, readFourBands } from "./audio-source";
 import { type JournalSession, appendChunk, deleteSession, listSessions, saveSession } from "./journal";
+import { LiveTranscript, useLiveTranscript } from "./LiveTranscript";
 import { RecoveryPanel, isRecoverableSession } from "./RecoveryPanel";
 import { type SegmentInfo, SegmentedRecorder, pickMimeType } from "./segment-recorder";
 import { downloadBlob, extensionForType, uploadAudioNote } from "./upload-flow";
 
 type Phase = "idle" | "starting" | "recording" | "paused" | "stopping" | "uploading" | "failed";
-type Mode = "voice" | "meeting";
+type Mode = "voice" | "meeting" | "live";
 
 const MIC_KEY = "saydraft-mic";
 const BELL_WEIGHTS: [number, number, number, number] = [0.76, 1.0, 1.0, 0.76];
@@ -38,11 +39,13 @@ export function RecorderView() {
   const recoverMode = params.get("recover") === "1";
   const maxSec = status?.limits.maxRecordingSec ?? MAX_RECORDING_SEC;
 
-  const [mode, setMode] = useState<Mode>(params.get("mode") === "meeting" ? "meeting" : "voice");
+  const requestedMode = params.get("mode");
+  const [mode, setMode] = useState<Mode>(requestedMode === "meeting" || requestedMode === "live" ? requestedMode : "voice");
   const [phase, setPhase] = useState<Phase>("idle");
   const [elapsedMs, setElapsedMs] = useState(0);
   const [bands, setBands] = useState<[number, number, number, number]>([0.1, 0.25, 0.2, 0.1]);
   const [mics, setMics] = useState<MediaDeviceInfo[]>([]);
+  const [defaultMicGroupId, setDefaultMicGroupId] = useState<string | null>(null);
   const [micId, setMicId] = useState("auto");
   const [languagePreference, setLanguage] = useState<string | null>(null);
   const [speakerPreference, setSpeakers] = useState<boolean | null>(null);
@@ -67,9 +70,20 @@ export function RecorderView() {
   const wakeLockRef = useRef<{ release: () => Promise<void> } | null>(null);
   const stopRef = useRef<(notice?: string) => Promise<void>>(async () => {});
 
-  const live = phase === "recording" || phase === "paused";
-  const controlsLocked = phase !== "idle" && !live;
-  const modeLocked = sharingPending || (controlsLocked && !(phase === "starting" && mode === "voice"));
+  const recordingActive = phase === "recording" || phase === "paused";
+  const controlsLocked = phase !== "idle" && !recordingActive;
+  const modeLocked = sharingPending || (controlsLocked && !(phase === "starting" && mode !== "meeting"));
+  const previewActive = mode === "live" && phase === "recording" && !sharingPending;
+  const selectedMic = micId === "auto" ? null : mics.find((device) => device.deviceId === micId) ?? null;
+  const useSystemMic = micId === "auto" || !selectedMic || (defaultMicGroupId !== null && selectedMic.groupId === defaultMicGroupId);
+  const { preview, stop: stopPreview, retry: retryPreview } = useLiveTranscript(
+    sourceRef,
+    activeSessionId,
+    previewActive,
+    language,
+    micId,
+    useSystemMic,
+  );
 
   useEffect(() => {
     try {
@@ -97,7 +111,14 @@ export function RecorderView() {
   const refreshMics = useCallback(async () => {
     if (!navigator.mediaDevices?.enumerateDevices) return;
     const devices = await navigator.mediaDevices.enumerateDevices().catch(() => [] as MediaDeviceInfo[]);
-    setMics(devices.filter((device) => device.kind === "audioinput" && device.deviceId && device.deviceId !== "default"));
+    const audioInputs = devices.filter((device) => device.kind === "audioinput" && device.deviceId);
+    const defaultDevice = audioInputs.find((device) => device.deviceId === "default");
+    setDefaultMicGroupId(defaultDevice?.groupId || null);
+    const physicalMics = audioInputs.filter((device) => device.deviceId !== "default" && device.deviceId !== "communications");
+    setMics(physicalMics);
+    if (physicalMics.length > 0) {
+      setMicId((current) => (current === "auto" || physicalMics.some((device) => device.deviceId === current) ? current : "auto"));
+    }
   }, []);
   useEffect(() => {
     void refreshMics();
@@ -111,12 +132,13 @@ export function RecorderView() {
   }, []);
 
   const releaseHardware = useCallback(() => {
+    stopPreview();
     stopMeters();
     sourceRef.current?.close();
     sourceRef.current = null;
     void wakeLockRef.current?.release().catch(() => undefined);
     wakeLockRef.current = null;
-  }, [stopMeters]);
+  }, [stopMeters, stopPreview]);
 
   const startMeters = useCallback(() => {
     const analyser = sourceRef.current?.analyser;
@@ -184,6 +206,7 @@ export function RecorderView() {
       const session = sessionRef.current;
       if (!recorder || !session || stoppingRef.current) return;
       stoppingRef.current = true;
+      stopPreview();
       setPhase("stopping");
       stopMeters();
       const finished = recorder.stop();
@@ -196,6 +219,7 @@ export function RecorderView() {
       session.activeMs = segments.reduce((sum, segment) => sum + segment.durationMs, 0);
       stoppingRef.current = false;
       if (segments.length === 0) {
+        setActiveSessionId(null);
         setPhase("idle");
         setError("No sound came through. Check your microphone and try again.");
         await deleteSession(session.id).catch(() => undefined);
@@ -203,7 +227,7 @@ export function RecorderView() {
       }
       await upload(segments, session);
     },
-    [releaseHardware, stopMeters, toast, upload],
+    [releaseHardware, stopMeters, stopPreview, toast, upload],
   );
   stopRef.current = stop;
 
@@ -293,10 +317,10 @@ export function RecorderView() {
     }
   }, [appendTo, maxSec, micId, mode, refreshMics, releaseHardware, startMeters, status]);
 
-  // If mic permission is already granted in voice mode, start right away like Letterly,
+  // If mic permission is already granted in voice or live mode, start right away like Letterly,
   // unless opened for recovery or an unsaved recording is already waiting to be recovered.
   useEffect(() => {
-    if (autoTriedRef.current || mode !== "voice" || phase !== "idle" || recoverMode) return;
+    if (autoTriedRef.current || mode === "meeting" || phase !== "idle" || recoverMode) return;
     let cancelled = false;
     Promise.all([
       navigator.permissions?.query({ name: "microphone" as PermissionName }).catch(() => null),
@@ -316,6 +340,8 @@ export function RecorderView() {
     if (nextMode === mode || modeLocked || stoppingRef.current) return;
     autoTriedRef.current = true;
     setError(null);
+    // Stop sending preview clips before the source can add shared meeting audio.
+    if (mode === "live") stopPreview();
     const source = sourceRef.current;
     if (source && nextMode === "meeting") {
       setSharingPending(true);
@@ -326,6 +352,8 @@ export function RecorderView() {
         return;
       } finally {
         setSharingPending(false);
+        // A rejected share can settle before React renders the pending state.
+        if (mode === "live" && !source.sharing && sourceRef.current === source && !stoppingRef.current) retryPreview();
       }
       const session = sessionRef.current;
       if (session && recorderRef.current) {
@@ -366,6 +394,7 @@ export function RecorderView() {
     if (!recorder) return;
     if (recorder.state === "recording") {
       recorder.pause();
+      stopPreview();
       setPhase("paused");
     } else if (recorder.state === "paused") {
       recorder.resume();
@@ -392,6 +421,7 @@ export function RecorderView() {
     }
     const source = sourceRef.current;
     if (!source || recorderRef.current !== recorder || stoppingRef.current) return;
+    stopPreview();
     recorder.discard();
     recorderRef.current = null;
     stopMeters();
@@ -422,20 +452,23 @@ export function RecorderView() {
   const autoMicLabel = mics[0]?.label ? `Auto-detect (${mics[0].label})` : "Auto-detect";
 
   return (
-    <div className="flex min-h-screen w-full flex-col bg-[var(--canvas)]">
-      <header className="sticky top-0 z-20 grid min-h-[3.875rem] w-full grid-cols-3 items-center border-b border-[var(--border)]/70 bg-[var(--canvas)]/90 px-5 backdrop-blur-md">
+    <div className="flex min-h-dvh w-full flex-col bg-[var(--canvas)]">
+      <header className="sticky top-0 z-20 grid min-h-[3.875rem] w-full grid-cols-[1fr_auto_1fr] items-center border-b border-[var(--border)]/70 bg-[var(--canvas)]/90 px-3 backdrop-blur-md sm:px-5">
         <div className="flex items-center">
           <Link
             href={backHref}
             aria-label="Back"
             onClick={(event) => {
-              if (!live || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
+              const busy = recordingActive || phase === "stopping" || phase === "uploading";
+              if (!busy || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
               event.preventDefault();
               void askConfirm({
-                title: "Stop recording?",
-                message: "Your audio is saved, so you can recover it anytime.",
-                confirmLabel: "Stop & go back",
-                cancelLabel: "Keep recording",
+                title: recordingActive ? "Stop recording?" : "Leave while saving?",
+                message: recordingActive
+                  ? "Your audio is saved, so you can recover it anytime."
+                  : "Your recording is still uploading. You can recover it if you leave now.",
+                confirmLabel: recordingActive ? "Stop & go back" : "Leave anyway",
+                cancelLabel: recordingActive ? "Keep recording" : "Keep saving",
                 icon: Square,
               }).then(async (confirmed) => {
                 if (!confirmed) return;
@@ -458,18 +491,19 @@ export function RecorderView() {
         <div className="flex justify-center">
           <span
             aria-label="Remaining recording time"
-            className="inline-flex items-center rounded-full bg-[var(--surface-panel)] px-3.5 py-1 text-sm font-semibold tabular-nums text-[var(--brand)]"
+            className="inline-flex items-center rounded-full bg-[var(--surface-panel)] px-3.5 py-1 text-sm font-semibold tabular-nums text-[var(--brand-strong)] dark:text-[var(--brand)]"
           >
             {phase === "stopping" || phase === "uploading" ? "Saving…" : formatCountdown(remainingSec)}
           </span>
         </div>
 
         <div className="flex justify-end">
-          <div role="tablist" aria-label="Recording mode" className="inline-flex rounded-full bg-[var(--surface-panel)] p-0.5">
+          <div role="group" aria-label="Recording mode" className="inline-flex rounded-full bg-[var(--surface-panel)] p-0.5">
             {(
               [
                 ["voice", "Voice", Mic],
                 ["meeting", "Meeting", MonitorSpeaker],
+                ["live", "Live", Captions],
               ] as const
             ).map(([value, label, Icon]) => {
               const selected = mode === value;
@@ -477,17 +511,16 @@ export function RecorderView() {
                 <button
                   key={value}
                   type="button"
-                  role="tab"
-                  aria-selected={selected}
+                  aria-pressed={selected}
                   aria-label={label}
                   disabled={modeLocked}
                   onClick={() => void changeMode(value)}
-                  className={`inline-flex cursor-pointer items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-[var(--brand)] disabled:cursor-not-allowed ${
+                  className={`inline-flex min-h-8 cursor-pointer items-center gap-1 rounded-full px-2 py-1 text-xs font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-[var(--brand)] disabled:cursor-not-allowed disabled:opacity-50 sm:px-2.5 ${
                     selected ? "bg-[var(--cta-bg)] text-[var(--cta-ink)]" : "text-[var(--ink-subtle)] hover:text-[var(--ink)]"
                   }`}
                 >
-                  <Icon className="h-3 w-3" />
-                  <span className="hidden sm:inline">{label}</span>
+                  <Icon aria-hidden="true" className={value === "live" ? "hidden h-3 w-3 sm:block" : "h-3 w-3"} />
+                  <span className={value === "live" ? undefined : "hidden sm:inline"}>{label}</span>
                 </button>
               );
             })}
@@ -512,26 +545,35 @@ export function RecorderView() {
           </div>
         )}
 
-        <div
-          aria-hidden="true"
-          className="flex h-[15rem] items-center justify-center gap-1.5 sm:gap-2"
-        >
-          {bands.map((level, index) => {
-            const weight = BELL_WEIGHTS[index];
-            const baseHeight = phase === "recording" ? 82.5 + level * 150 * weight : 82.5 * (0.85 + 0.15 * weight);
-            return (
-              <div
-                key={index}
-                className={`w-[4rem] min-h-[4rem] rounded-full transition-[height,opacity] duration-[200ms] ease-out sm:w-[5.15625rem] sm:min-h-[5.15625rem] ${
-                  phase === "paused" ? "bg-[var(--ink)]/55" : "bg-[var(--ink)]"
-                }`}
-                style={{ height: `${Math.round(baseHeight)}px` }}
-              />
-            );
-          })}
-        </div>
+        {mode === "live" ? (
+          <LiveTranscript
+            key={activeSessionId}
+            preview={phase === "idle" || phase === "starting" ? null : preview}
+            active={previewActive}
+            phase={phase}
+          />
+        ) : (
+          <div
+            aria-hidden="true"
+            className="flex h-[15rem] items-center justify-center gap-1.5 sm:gap-2"
+          >
+            {bands.map((level, index) => {
+              const weight = BELL_WEIGHTS[index];
+              const baseHeight = phase === "recording" ? 82.5 + level * 150 * weight : 82.5 * (0.85 + 0.15 * weight);
+              return (
+                <div
+                  key={index}
+                  className={`w-[4rem] min-h-[4rem] rounded-full transition-[height,opacity] duration-[200ms] ease-out sm:w-[5.15625rem] sm:min-h-[5.15625rem] ${
+                    phase === "paused" ? "bg-[var(--ink)]/55" : "bg-[var(--ink)]"
+                  }`}
+                  style={{ height: `${Math.round(baseHeight)}px` }}
+                />
+              );
+            })}
+          </div>
+        )}
 
-        {(!live || sharingPending) && (
+        {((!recordingActive && phase !== "failed") || sharingPending) && (
           <p className="mt-4 text-xs font-medium text-[var(--ink-muted)]" aria-live="polite">
             {sharingPending || (phase === "starting" && mode === "meeting")
               ? "Pick the tab or window with meeting audio…"
@@ -545,7 +587,9 @@ export function RecorderView() {
                       : "Uploading recording…"
                     : mode === "meeting"
                       ? "Tap record to capture your mic and meeting audio"
-                      : "Tap the red button to start recording"}
+                      : mode === "live"
+                        ? "Tap record to start live transcription"
+                        : "Tap the red button to start recording"}
           </p>
         )}
 
@@ -592,6 +636,7 @@ export function RecorderView() {
                 });
                 if (!confirmed) return;
                 await deleteSession(failed.session.id).catch(() => undefined);
+                setActiveSessionId(null);
                 setFailed(null);
                 setError(null);
                 setPhase("idle");
@@ -656,7 +701,7 @@ export function RecorderView() {
       <footer className="pb-10 pt-2">
         <div className="flex items-center justify-center gap-10">
           <AnimatePresence mode="popLayout" initial={false}>
-            {live && (
+            {recordingActive && (
               <motion.button
                 key="restart"
                 type="button"
@@ -686,12 +731,12 @@ export function RecorderView() {
                 transition={SPRING_SNAPPY}
                 onClick={() => void start()}
                 disabled={phase === "failed"}
-                aria-label={mode === "meeting" ? "Start recording meeting" : "Start recording"}
+                aria-label={mode === "meeting" ? "Start recording meeting" : mode === "live" ? "Start live recording" : "Start recording"}
                 className="cursor-pointer rounded-full text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-40"
               >
                 <RecordStartRingIcon className="h-[3.75rem] w-[3.75rem]" />
               </motion.button>
-            ) : live ? (
+            ) : recordingActive ? (
               <motion.button
                 key="stop"
                 type="button"
@@ -721,7 +766,7 @@ export function RecorderView() {
               </motion.div>
             )}
 
-            {live && (
+            {recordingActive && (
               <motion.button
                 key="pause"
                 type="button"

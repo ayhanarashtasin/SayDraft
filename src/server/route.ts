@@ -1,5 +1,5 @@
 import type { NextRequest } from "next/server";
-import { type AuthUser, applyPending, requireUser } from "./auth.ts";
+import { type AuthUser, type PendingAuth, applyPending, requireUser } from "./auth.ts";
 import { errorResponse, guardRequest } from "./http.ts";
 
 type RouteContext<P> = { params: Promise<P> };
@@ -13,13 +13,15 @@ export function route<P extends Record<string, string> = Record<string, never>>(
   handler: (request: NextRequest, params: P, user: AuthUser) => Promise<Response> | Response,
 ) {
   return async (request: NextRequest, context: RouteContext<P>): Promise<Response> => {
+    let pending: PendingAuth | undefined;
     try {
       guardRequest(request);
-      const { user, pending } = await requireUser(request);
+      const auth = await requireUser(request);
+      pending = auth.pending;
       const params = context?.params ? await context.params : ({} as P);
-      return applyPending(await handler(request, params, user), pending);
+      return applyPending(await handler(request, params, auth.user), pending);
     } catch (error) {
-      return errorResponse(error);
+      return pending ? applyPending(errorResponse(error), pending) : errorResponse(error);
     }
   };
 }

@@ -319,6 +319,33 @@ test("status reports the free Pro+ plan, the API key and ffmpeg", async () => {
   assert.equal(data.settings.transcribeModel, "gpt-4o-mini-transcribe");
 });
 
+test("live preview transcribes short clips without saving a note", async () => {
+  const pathname = "/api/record/live?language=es";
+  const clip = makeAudio(path.join(workDir, "preview.webm"), 2, ["-c:a", "libopus"]);
+  const headers = { "Content-Type": "audio/webm;codecs=opus" };
+  const beforeNotes = (await api("/api/notes")).data.notes.length;
+  const beforeCalls = calls.transcriptions.length;
+
+  assert.equal((await fetch(base + pathname, { method: "POST", headers, body: clip })).status, 401);
+  assert.equal((await api(pathname, { headers: { "Content-Type": "text/plain" }, body: clip })).status, 415);
+  assert.equal((await api(pathname, { headers, body: Buffer.alloc(256 * 1024 + 1) })).status, 413);
+  assert.equal((await api("/api/record/live?language=invalid", { headers, body: clip })).status, 400);
+  assert.equal(calls.transcriptions.length, beforeCalls);
+
+  const preview = await api(pathname, { headers, body: clip });
+  assert.equal(preview.status, 200);
+  assert.match(preview.data.text, /^part \d+ gonna work$/);
+  assert.equal(preview.headers.get("cache-control"), "no-store");
+  const request = calls.transcriptions.at(-1);
+  assert.equal(request.model, "gpt-4o-mini-transcribe");
+  assert.equal(request.language, "es");
+  assert.equal(request.name, "preview.webm");
+  assert.equal(request.size, clip.length);
+  assert.equal((await api(pathname, { headers, body: clip })).status, 429);
+  assert.equal(calls.transcriptions.length, beforeCalls + 1);
+  assert.equal((await api("/api/notes")).data.notes.length, beforeNotes);
+});
+
 test("signed-out visitors, other sites and unknown hosts are rejected", async () => {
   for (const pathname of ["/api/notes", "/api/export", "/api/status", "/api/auth/me"]) {
     const response = await fetch(base + pathname);

@@ -6,6 +6,10 @@ export const MAX_RECORDING_SEC = 180 * 60;
 export const RECORDING_SEGMENT_SEC = 10 * 60;
 export const RECORDING_BITRATE = 48_000;
 
+/** Short, standalone clips sent for the live preview fallback, separate from saved audio. */
+export const LIVE_PREVIEW_CLIP_MS = 2_000;
+export const LIVE_PREVIEW_MAX_BYTES = 256 * 1024;
+
 /** Files at or below this size (and short enough) go to the transcription API unchanged. */
 export const DIRECT_TRANSCRIBE_MAX_BYTES = 24 * 1024 * 1024;
 /** Single-request fast path cap (stays safely under Vercel's 4.5 MB request body limit; ~11 min at 48 kbps). */

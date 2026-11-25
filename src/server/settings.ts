@@ -4,6 +4,8 @@ import { badRequest } from "./http.ts";
 import { assertOk, owned } from "./supabase.ts";
 
 const MODEL_PATTERN = /^[A-Za-z0-9._:/@+-]{1,120}$/;
+const PREVIEW_SETTINGS_TTL_MS = 30_000;
+const previewSettingsCache = new Map<string, { transcribeModel: string; defaultLanguage: string; expires: number }>();
 
 function envValue(name: string): string | undefined {
   const value = process.env[name];
@@ -36,6 +38,21 @@ export async function getSettings(userId: string): Promise<AppSettings> {
     }
   }
   return settings;
+}
+
+/** Short-lived cached subset of settings for live preview clips; invalidated on updateSettings. */
+export async function getPreviewSettings(userId: string): Promise<{ transcribeModel: string; defaultLanguage: string }> {
+  const now = Date.now();
+  const cached = previewSettingsCache.get(userId);
+  if (cached && cached.expires > now) return cached;
+  for (const [id, entry] of previewSettingsCache) {
+    if (entry.expires <= now) previewSettingsCache.delete(id);
+  }
+  // ponytail: 30s per-instance TTL avoids a Supabase DB round trip on every preview clip.
+  const { transcribeModel, defaultLanguage } = await getSettings(userId);
+  const entry = { transcribeModel, defaultLanguage, expires: now + PREVIEW_SETTINGS_TTL_MS };
+  previewSettingsCache.set(userId, entry);
+  return entry;
 }
 
 function validModel(value: unknown, field: string, allowEmpty: boolean): string {
@@ -81,6 +98,7 @@ export async function updateSettings(
   const rows = Object.entries(changes).map(([key, value]) => ({ key, value: JSON.stringify(value) }));
   if (rows.length > 0) {
     assertOk(await owned(userId, "settings").upsert(rows, { onConflict: "user_id,key" }));
+    previewSettingsCache.delete(userId);
   }
   return getSettings(userId);
 }

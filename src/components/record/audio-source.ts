@@ -92,6 +92,7 @@ export function openAudioSource(options: { deviceId: string; meeting: boolean; o
       mic?.disconnect();
       stopTracks(mic?.mediaStream);
       mic = next;
+      if (context.state === "suspended") await context.resume();
     } catch (error) {
       stopTracks(stream);
       throw describeMediaError(error, false);

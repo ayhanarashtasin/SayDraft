@@ -6,6 +6,7 @@ Saydraft is a private voice notes workspace. Record or upload audio, get a trans
 
 - Record up to three hours with pause and resume, microphone selection, and recovery from IndexedDB. The browser saves long recordings as ten-minute segments.
 - Record meetings with microphone and shared tab or system audio in supported browsers, including Chrome and Edge.
+- See a live transcript while recording. Supported browsers stream word-by-word captions through the Web Speech API, falling back to short audio clips on unsupported browsers. The final transcript is generated from the full recording after you stop.
 - Upload audio or video directly to private Supabase Storage. ffmpeg prepares audio for playback and splits long files for transcription. Enable speaker separation for multi-speaker notes.
 - Search, sort, edit, tag, archive, merge, and delete notes. Play, seek, and download recordings or append audio to a note.
 - Stream AI rewrites, use custom prompts or the prompt gallery, translate into more than 60 languages, and configure a dictionary and automatic text replacements.
