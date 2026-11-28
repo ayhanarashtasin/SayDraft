@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { isParakeetModel } from "../lib/transcription-models.ts";
 import type { AppSettings } from "../lib/types.ts";
 import { HttpError } from "./http.ts";
 
@@ -9,14 +10,64 @@ export function aiConfig(): { apiKey: string; baseUrl: string; configured: boole
 }
 
 const groqWhisper = /^whisper-large-v3(?:-turbo)?$/;
+const REPEATED_WORD = /\b(\p{L}+)(?:[\s,]+?\1){4,}\b/iu;
+
+function isWhisperModel(model: string): boolean {
+  return groqWhisper.test(model) || model === "whisper-1";
+}
+
+function normalizeSegmentText(text: string): string {
+  return text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+}
+
+export interface WhisperSegmentCandidate {
+  text: string;
+  noSpeechProb?: number;
+  avgLogprob?: number;
+  compressionRatio?: number;
+}
+
+/** Drops Whisper segments whose confidence/compression metrics indicate background-noise hallucination. */
+export function filterWhisperSegments<T extends WhisperSegmentCandidate>(segments: T[], prompt?: string): T[] {
+  const normalizedPrompt = prompt ? normalizeSegmentText(prompt) : "";
+  const kept: T[] = [];
+  let previous = "";
+  let repeatStreak = 0;
+
+  for (const segment of segments) {
+    const { noSpeechProb: nsp, avgLogprob: lp, compressionRatio: cr } = segment;
+    if (nsp !== undefined && (nsp >= 0.8 || (nsp >= 0.6 && lp !== undefined && lp < -0.5))) continue;
+    if (lp !== undefined && lp < -1.0) continue;
+    if (cr !== undefined && cr > 2.4) continue;
+
+    const normalized = normalizeSegmentText(segment.text);
+    if (!normalized) continue;
+    const lowConfidence = (lp !== undefined && lp < -0.45) || (nsp !== undefined && nsp > 0.3);
+    if (normalizedPrompt && normalized.length >= 4 && normalizedPrompt.includes(normalized) && lowConfidence) continue;
+    if (REPEATED_WORD.test(segment.text) && (lowConfidence || (cr !== undefined && cr > 2.0))) continue;
+    if (normalized === previous) {
+      repeatStreak += 1;
+      if (repeatStreak >= 2 && ((lp !== undefined && lp < -0.4) || (nsp !== undefined && nsp > 0.3))) continue;
+    } else {
+      previous = normalized;
+      repeatStreak = 0;
+    }
+    kept.push(segment);
+  }
+  return kept;
+}
+
+function usesGroq(): boolean {
+  return /^https?:\/\/api\.groq\.com(?:\/|$)/i.test(aiConfig().baseUrl);
+}
 
 export function resolveSpeakerTranscription(settings: Pick<AppSettings, "diarizeModel" | "transcribeModel" | "rewriteModel">) {
   const { diarizeModel, transcribeModel, rewriteModel } = settings;
-  const groq = /^https?:\/\/api\.groq\.com(?:\/|$)/i.test(aiConfig().baseUrl);
-  if (groq) {
+  if (usesGroq()) {
     const model = [diarizeModel, transcribeModel].find((name) => groqWhisper.test(name)) ?? "whisper-large-v3-turbo";
     return { model, speakerLabelModel: rewriteModel };
   }
+  if (isParakeetModel(diarizeModel)) return null;
   if (diarizeModel === "whisper-1" || groqWhisper.test(diarizeModel) || (!diarizeModel && groqWhisper.test(transcribeModel))) {
     return { model: diarizeModel || transcribeModel, speakerLabelModel: rewriteModel };
   }
@@ -144,6 +195,9 @@ interface TranscriptSegment {
   text?: unknown;
   start?: unknown;
   end?: unknown;
+  no_speech_prob?: unknown;
+  avg_logprob?: unknown;
+  compression_ratio?: unknown;
 }
 
 async function inferSpeakers(
@@ -174,22 +228,49 @@ async function inferSpeakers(
 }
 
 export async function transcribe(input: TranscribeInput): Promise<TranscribeResult> {
-  const blob = input.blob ?? (await fs.openAsBlob(input.filePath!, { type: input.mime }));
+  const source = input.blob ?? input.filePath!;
+  const parakeet = isParakeetModel(input.model) ? input.model : undefined;
+  if (parakeet && input.diarize) {
+    throw new HttpError(422, "provider_model", "Choose a separate model for speaker labels in Settings → Preferences.");
+  }
+  const nvidiaModel = !input.preview && input.language === "en" ? parakeet : undefined;
+  const nvidiaApiKey = nvidiaModel ? process.env.NVIDIA_API_KEY?.trim() : undefined;
+  if (nvidiaModel && !nvidiaApiKey) {
+    throw new HttpError(503, "key_missing", "Set NVIDIA_API_KEY in the server environment to use Parakeet.");
+  }
+
+  // Parakeet is English-only; use the usual provider for other languages, auto-detect, and live clips.
+  const model = parakeet && !nvidiaModel ? (usesGroq() ? "whisper-large-v3-turbo" : "gpt-4o-mini-transcribe") : input.model;
+  const whisper = isWhisperModel(model);
+  let spokenAudio: Blob | undefined;
+  if (!input.preview && !input.diarize && (nvidiaModel || whisper)) {
+    const { prepareSpeechAudio } = await import("./speech-audio.ts");
+    const filtered = await prepareSpeechAudio(source, input.signal);
+    if (filtered === null) return { text: "" };
+    spokenAudio = filtered;
+  }
+
+  if (nvidiaModel && nvidiaApiKey) {
+    const { transcribeParakeet } = await import("./parakeet.ts");
+    return { text: await transcribeParakeet(source, nvidiaApiKey, { model: nvidiaModel, signal: input.signal, spokenAudio }) };
+  }
+
+  const blob = spokenAudio ?? (typeof source === "string" ? await fs.openAsBlob(source, { type: input.mime }) : source);
   const labelModel = input.diarize ? input.speakerLabelModel : undefined;
   const response = await post(
     "audio/transcriptions",
     () => {
       const form = new FormData();
-      form.set("file", blob, input.fileName);
-      form.set("model", input.model);
+      form.set("file", blob, spokenAudio ? "speech.ogg" : input.fileName);
+      form.set("model", model);
       if (input.language) form.set("language", input.language);
       if (input.diarize && !labelModel) {
         form.set("response_format", "diarized_json");
         form.set("chunking_strategy", "auto");
       } else {
-        form.set("response_format", labelModel ? "verbose_json" : "json");
+        form.set("response_format", labelModel || whisper ? "verbose_json" : "json");
         if (labelModel) form.set("timestamp_granularities[]", "segment");
-        if (input.preview) form.set("temperature", "0");
+        if (input.preview || whisper) form.set("temperature", "0");
         if (input.prompt) form.set("prompt", input.prompt);
       }
       return form;
@@ -201,13 +282,27 @@ export async function transcribe(input: TranscribeInput): Promise<TranscribeResu
     text?: unknown;
     segments?: TranscriptSegment[];
   } | null;
-  const text = typeof data?.text === "string" ? data.text.trim() : "";
-  const segments = Array.isArray(data?.segments)
-    ? data.segments.flatMap((segment) => {
+  const hasSegments = Array.isArray(data?.segments);
+  const rawSegments = hasSegments
+    ? data.segments!.flatMap((segment) => {
         const text = typeof segment?.text === "string" ? segment.text.trim() : "";
-        return text ? [{ text, speaker: segment.speaker, start: segment.start, end: segment.end }] : [];
+        return text
+          ? [{
+              text,
+              speaker: segment.speaker,
+              start: segment.start,
+              end: segment.end,
+              noSpeechProb: typeof segment.no_speech_prob === "number" ? segment.no_speech_prob : undefined,
+              avgLogprob: typeof segment.avg_logprob === "number" ? segment.avg_logprob : undefined,
+              compressionRatio: typeof segment.compression_ratio === "number" ? segment.compression_ratio : undefined,
+            }]
+          : [];
       })
     : [];
+  const segments = whisper && hasSegments ? filterWhisperSegments(rawSegments, input.prompt) : rawSegments;
+  const text = whisper && hasSegments
+    ? segments.map((segment) => segment.text).join(" ").trim()
+    : typeof data?.text === "string" ? data.text.trim() : "";
   if (labelModel) {
     const timedSegments = segments.map(({ text, start, end }) => ({ text, start, end }));
     return {
@@ -217,7 +312,7 @@ export async function transcribe(input: TranscribeInput): Promise<TranscribeResu
   }
   return {
     text,
-    segments: segments.length
+    segments: input.diarize && segments.length
       ? segments.map(({ speaker, text }) => ({ speaker: typeof speaker === "string" ? speaker : "?", text }))
       : undefined,
   };

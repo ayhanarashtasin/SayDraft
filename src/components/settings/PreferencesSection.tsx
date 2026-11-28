@@ -6,6 +6,7 @@ import { motion } from "motion/react";
 import { api, errorMessage } from "@/lib/api-client";
 import { LANGUAGES } from "@/lib/languages";
 import { SPRING_SNAPPY } from "@/lib/motion";
+import { isParakeetModel, PARAKEET_MODELS } from "@/lib/transcription-models";
 import type { AppSettings, Prompt } from "@/lib/types";
 import { useAppStatus } from "../StatusProvider";
 import { type Theme, useTheme } from "../ThemeProvider";
@@ -15,7 +16,7 @@ import { BackgroundPicker } from "./BackgroundPicker";
 import { SectionCard, SectionHeader } from "./SectionLayout";
 
 const MODEL_SUGGESTIONS = {
-  transcribe: ["whisper-large-v3-turbo", "whisper-large-v3", "gpt-4o-mini-transcribe", "gpt-4o-transcribe", "whisper-1"],
+  transcribe: ["whisper-large-v3-turbo", "whisper-large-v3", "gpt-4o-mini-transcribe", "gpt-4o-transcribe", "whisper-1", ...PARAKEET_MODELS],
   rewrite: ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini", "gpt-4o", "gpt-5-mini", "gpt-5"],
   diarize: ["gpt-4o-transcribe-diarize"],
 };
@@ -257,7 +258,9 @@ export function PreferencesSection() {
                   <ModelField
                     id="transcribe-model"
                     label="Transcription model"
-                    description="Used to turn voice recordings and uploaded audio into text."
+                    description={isParakeetModel(settings.transcribeModel)
+                      ? "Parakeet needs an NVIDIA API key and runs on saved recordings or uploads when English is selected and speaker separation is off."
+                      : "Used to turn voice recordings and uploaded audio into text."}
                     value={settings.transcribeModel}
                     suggestions={MODEL_SUGGESTIONS.transcribe}
                     onSave={(value) => void save({ transcribeModel: value })}

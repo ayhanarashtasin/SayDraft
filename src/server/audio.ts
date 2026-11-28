@@ -137,6 +137,41 @@ export async function convertToM4a(input: string, output: string, signal?: Abort
   checkPreparedAudio(result, output, "Converting the audio");
 }
 
+export const TRANSCRIPTION_SAMPLE_RATE = 16_000;
+const monoTranscriptionAudio = ["-ac", "1", "-ar", String(TRANSCRIPTION_SAMPLE_RATE)];
+
+/** Decodes audio for voice activity detection, with a cap so unbounded inputs can be skipped. */
+export async function decodeTranscriptionPcm(input: string, output: string, maxBytes: number, signal?: AbortSignal): Promise<void> {
+  const result = await runFfmpeg(
+    ["-y", ...audioInput(input), "-vn", "-map", "0:a:0", ...monoTranscriptionAudio,
+      "-c:a", "pcm_s16le", "-f", "s16le", "-fs", String(maxBytes), output],
+    { signal },
+  );
+  checkPreparedAudio(result, output, "Decoding audio for speech detection");
+}
+
+/** Encodes a mono Opus file small enough for a single transcription request. */
+export async function convertToOpus(
+  input: string, output: string, signal?: AbortSignal, inputFormat?: "s16le", bitrate: "48k" | "24k" = "48k",
+): Promise<void> {
+  const maxBytes = 4 * 1024 * 1024;
+  const inputArgs = inputFormat ? ["-f", inputFormat, ...monoTranscriptionAudio, "-protocol_whitelist", "file", "-i", input] : audioInput(input);
+  const encode = async (rate: "48k" | "24k") => {
+    const result = await runFfmpeg(
+      ["-y", ...inputArgs, "-vn", "-map", "0:a:0", ...monoTranscriptionAudio,
+        "-c:a", "libopus", "-b:a", rate, "-vbr", rate === "48k" ? "on" : "off", "-fs", String(maxBytes), output],
+      { signal },
+    );
+    checkPreparedAudio(result, output, "Converting audio for transcription");
+    return fs.statSync(output).size;
+  };
+  let size = await encode(bitrate);
+  if (size >= maxBytes - 64 * 1024 && bitrate === "48k") size = await encode("24k");
+  if (size >= maxBytes - 64 * 1024) {
+    throw new AudioToolError("This audio is too long for a single transcription request. Split it and try again.");
+  }
+}
+
 /** Rewrites a browser recording's container (no re-encoding) so it gets a duration and seek index. */
 export async function remuxAudio(input: string, output: string, signal?: AbortSignal): Promise<void> {
   const mp4 = /\.(m4a|mp4)$/i.test(output) ? ["-movflags", "+faststart"] : [];
